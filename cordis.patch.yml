@@ -1,0 +1,10 @@
+# dsh-llm-omni bundle layer.
+#
+# 条目的 id 是设置页里这块配置的命名空间，覆盖本行配置时请保持不变；
+# 否则 DSH 会把它当成另一条路由，旧的配置随之失去归属。
+#
+# 默认值不改变任何现有行为：未填 baseURL 时不注册任何路由，
+# 装载本插件本身不会让 DSH 多出一个不可用的模型来源。
+- insert:
+    - id: omni
+      name: dsh-llm-omni
