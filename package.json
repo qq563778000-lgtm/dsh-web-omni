@@ -1,7 +1,7 @@
 {
   "name": "dsh-llm-omni",
   "version": "0.1.0",
-  "description": "DSH provider 插件：把本地 OmniAPI（Web-to-API 代理）注册为 LLM 路由",
+  "description": "DSH provider 插件：把 DeepSeek Web 转发能力内嵌进 DeepSeek Harness，装完填账号即可用",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -22,7 +22,9 @@
     "kernel",
     "client",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "test"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
@@ -53,9 +55,14 @@
     }
   },
   "scripts": {
-    "test": "node --test test/*.test.js",
-    "test:e2e": "node scripts/e2e-live.mjs",
-    "sync:kernel": "node scripts/sync-kernel.mjs",
-    "check:kernel": "node scripts/sync-kernel.mjs --check"
-  }
+    "test": "node --test test/*.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/<你的用户名>/dsh-llm-omni.git"
+  },
+  "bugs": {
+    "url": "https://github.com/<你的用户名>/dsh-llm-omni/issues"
+  },
+  "homepage": "https://github.com/<你的用户名>/dsh-llm-omni#readme"
 }

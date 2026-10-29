@@ -25,14 +25,31 @@ DSH 进程
 ## 安装
 
 ```sh
-dsh plugin --profile <profile> add <本目录路径>
+dsh plugin --profile <profile> add github:<你的用户名>/dsh-llm-omni
 ```
+
+`<profile>` 是你的 DSH profile 名（桌面端通常是 `desktop`，Web 端是 `web`）。
+安装后**重启 DSH**。
 
 装好后打开 DSH 设置页，找到 **OmniAPI** 一节：
 
 1. 选择「添加 Token」粘贴 DeepSeek Web Token，或「添加账号」填邮箱密码
 2. 保存后点「测试全部凭据」确认可用
 3. 在模型选择器里选 `omni` 开始对话
+
+### 前置条件
+
+- DeepSeek Harness `0.2.1-rc.2` 及以上（`rc.3` 可用）
+- Node.js `^22.19.0 || >=24.0.0`
+- 一个可用的 DeepSeek Web 账号或 Token（插件不提供凭据）
+
+## 更新
+
+```sh
+dsh plugin --profile <profile> add github:<你的用户名>/dsh-llm-omni
+```
+
+重新执行安装命令即可升级到最新版。
 
 ## 与"用 pi-ai 网关连 OmniAPI"的区别
 
@@ -79,33 +96,22 @@ OpenAI 兼容网关，纯配置就能连上 OmniAPI。本插件的增量在于�
 - 设置页与 HTTP 响应只返回掩码（`abcdef...7890`），不提供"查看明文"入口
 - 状态端点仅接受本机请求，并校验 Host / Origin 防 DNS rebinding
 
-## 关于 `kernel/`
-
-`kernel/` 是从主项目 `src/` 生成的副本，**不要手改**。主项目修复后同步：
-
-```sh
-npm run sync:kernel     # 从 ../src 重新生成
-npm run check:kernel    # 检查是否漂移（CI 用）
-```
-
 ## 测试
 
 ```sh
-npm test          # 45 项（DSH 未安装时 3 项契约测试自动跳过）
-npm run test:e2e  # 真实上游对话，需 OmniAPI_TOKEN
+npm test    # 62 项
 ```
 
-`contract.test.js` 用**真实的** `@deepseek-ai/dsh-llm` 的 `LlmRuntime`
+其中 `contract.test.js` 用**真实的** `@deepseek-ai/dsh-llm` 的 `LlmRuntime`
 装载本适配器，校验 DSH 未文档化的运行时约束（`provider` 必须等于注册路由、
 `context` 必须是 `{ contextWindow }`、`defaultMaxTokens` 等）。
+未安装 `@deepseek-ai/dsh-llm` 时该组自动跳过，不影响其余用例。
 
-端到端：
+## 已知限制
 
-```sh
-OMNI_TOKEN=<DeepSeek Web Token> npm run test:e2e
-```
-
-## 限制
-
-- 只在 `dsh 0.2.1-rc.2` 上做过契约级验证；`rc.3` 需实机确认。
+- 在 `dsh 0.2.1-rc.2` 与 `rc.3` 上验证过契约；更高版本需实机确认。
+- 上游 DeepSeek Web 只有思考的**开/关**，没有 effort 分级。
+  插件向 DSH 声明全量 7 档（`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`），
+  内部把非 `off` 的档位统一映射为「开启思考」——档位可选，但强度无差异。
 - 图片仅支持 URL 或 base64 data；本地附件引用需要宿主附件服务内联。
+- 上游若改变 `create_pow_challenge` 或 SSE 格式，需重新同步转发内核。

@@ -1,0 +1,16 @@
+# 依赖（DSH 运行时由宿主提供，本地仅测试用）
+node_modules/
+
+# 测试时的真实凭据与运行时数据，严禁入库
+.bench-data/
+data/
+config.json
+.env
+
+# 日志
+*.log
+logs/
+
+# 系统杂项
+.DS_Store
+Thumbs.db
