@@ -66,6 +66,42 @@ async function extractUploads(messages, token) {
   return refFileIds;
 }
 
+/**
+ * 重试轮使用的轻量格式提示。
+ *
+ * 为什么不重发完整工具说明：首轮那 245K 字符仍在同一会话上下文里，
+ * 重复发送只会放大成本。这里只重申"唯一合法格式"，让模型把注意力
+ * 放回结构上——真实故障正是结构写坏了，不是不知道该用哪个工具。
+ *
+ * @param {string|null} triggerSignal 首轮使用的触发信号
+ */
+function buildRetryFormatHint(triggerSignal) {
+  const signal = triggerSignal || '<Function_Start/>';
+  return `
+
+## 重试：请严格按以下格式重新输出
+
+上一次的工具调用格式无法解析。工具清单见上文，无需重复确认；请只修正结构：
+
+\`\`\`
+${signal}
+<function_calls>
+  <function_call>
+    <tool>工具名</tool>
+    <args_json><![CDATA[{"参数":"值"}]]></args_json>
+  </function_call>
+</function_calls>
+\`\`\`
+
+要点：
+- 触发信号独占一行、只出现一次
+- \`<args_json>\` 内必须是完整 JSON 对象，以 \`{\` 开头、\`}\` 结尾
+- CDATA 结束必须是两个右方括号 \`]]>\`
+- \`</function_calls>\` 后不得有任何文字
+
+请直接输出修正后的调用，不要再解释。`;
+}
+
 function promptWithToolInstructions(messages, toolInstructions) {
   return (buildPromptFromMessages(messages).trim() + (toolInstructions || '')).trim();
 }
@@ -408,7 +444,12 @@ export async function* runDeepSeek(internalRequest, context = {}) {
         { role: 'assistant', content: [{ type: 'text', text: currentContent || '' }] },
         { role: 'user', content: [{ type: 'text', text: retryPrompt }] },
       ];
-      const retryFullPrompt = promptWithToolInstructions(retryMessagesWithPrompt, toolInstructions);
+      // 重试不再重复携带工具说明。
+      //
+      // 首轮已经把完整工具列表（188 工具时约 245K 字符）发给模型，它仍在
+      // 同一会话的上下文里；再发一遍既浪费又可能强化"格式很难"的印象。
+      // 重试轮只补一段轻量的格式纠错说明。
+      const retryFullPrompt = promptWithToolInstructions(retryMessagesWithPrompt, buildRetryFormatHint(triggerSignal));
       const retryResult = await completion({
         modelType,
         prompt: retryFullPrompt,
@@ -473,7 +514,16 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       if (retryResult?.toolCalls?.length) {
         detectedToolCalls = retryResult.toolCalls;
       } else {
-        for (const textEvent of emitText(pendingToolFailureText)) yield textEvent;
+        // 旧实现把 pendingToolFailureText（原文通常是一段残缺的 XML）当正文
+        // 发给客户端。客户端无法区分"模型回答"与"解析失败的残留"，
+        // 表现就是"转了很久，最后吐出一段乱七八糟的东西"。
+        //
+        // 改为明确失败：客户端能据此提示重试，而不是把残片当答案用掉。
+        const failureType = retryResult?.failureType || 'syntax_error';
+        throw new InternalAPIError(
+          `工具调用格式无法解析（${failureType}，已重试 ${retryResult?.attempts ?? 0} 次）`,
+          { status: 502, type: 'api_error', code: 'TOOL_FORMAT_FAILED', retryable: true, cause: retryResult },
+        );
       }
     }
 
@@ -539,6 +589,8 @@ export async function* runDeepSeek(internalRequest, context = {}) {
         console.warn('[DeepSeek] 上游返回完全空流，已记该凭据一次错误');
       }
       releaseSlot();
+      let recoveredText = '';
+      let recoveryError = null;
       try {
         const recovered = await retryReasoningOnly({
           retryPrompt: getReasoningOnlyRetryPrompt(lastUserText, reasoningContent),
@@ -546,14 +598,29 @@ export async function* runDeepSeek(internalRequest, context = {}) {
           messages: promptMessages,
           signal: abortController.signal,
         });
-        const recoveredText = String(recovered || '').trim();
-        if (recoveredText) {
-          for (const deltaEvent of emitText(recoveredText)) yield deltaEvent;
-        } else {
-          console.warn('[DeepSeek] Reasoning-only recovery returned empty; leaving reply as-is');
-        }
+        recoveredText = String(recovered || '').trim();
       } catch (err) {
-        console.warn(`[DeepSeek] Reasoning-only recovery failed: ${err.message}`);
+        recoveryError = err;
+      }
+
+      if (recoveredText) {
+        for (const deltaEvent of emitText(recoveredText)) yield deltaEvent;
+      } else {
+        // 旧实现在这里只打一条 warn 就结束：客户端收到 200 + 空内容，
+        // 无法区分"模型没话说"和"代理层放弃了"，表现就是任务卡住。
+        // 续写也失败时必须显式报错，让客户端能提示重试。
+        throw new InternalAPIError(
+          completelyEmpty
+            ? '上游返回空响应，且续写未取得正文'
+            : '上游只返回了思考内容，续写未取得正文',
+          {
+            status: 502,
+            type: 'api_error',
+            code: 'EMPTY_RESPONSE',
+            retryable: true,
+            cause: recoveryError || undefined,
+          },
+        );
       }
     }
 

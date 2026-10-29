@@ -111,6 +111,39 @@ export function detectFileMutationTools(tools = []) {
   return { editNames, writeNames };
 }
 
+/**
+ * 工具数量分档。
+ *
+ * 依据（2026-10 实测 DSH 真实会话）：188 个工具时，现有全量 schema 渲染
+ * 产生 245,440 字符提示词，其中工具列表占 97.4%。绝大多数工具在单轮里
+ * 根本不会被用到，却要把完整 JSON Schema 每次都发一遍。
+ *
+ * 阈值取 20 / 60：
+ *   - ≤20：模型完全能逐条读完 schema，全量最准
+ *   - 21–60：名称 + 一句话 + 必填项足够区分
+ *   - >60：连描述都读不过来，改为分组 + 两步引导
+ */
+export const TOOL_PRESENTATION_THRESHOLDS = Object.freeze({ full: 20, compact: 60 });
+
+export function selectToolPresentation(tools = []) {
+  const count = Array.isArray(tools) ? tools.length : 0;
+  if (count <= TOOL_PRESENTATION_THRESHOLDS.full) return 'full';
+  if (count <= TOOL_PRESENTATION_THRESHOLDS.compact) return 'compact';
+  return 'grouped';
+}
+
+/** 取描述首句，用于 compact 档。 */
+function firstSentence(text, maxLen = 80) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!value) return '';
+  const cut = value.search(/[。．.！!？?\n]/);
+  const sentence = cut > 0 ? value.slice(0, cut) : value;
+  return sentence.length > maxLen ? `${sentence.slice(0, maxLen)}…` : sentence;
+}
+
+/**
+ * 全量渲染：完整参数 schema 摘要。工具少时最准确。
+ */
 function renderToolList(tools) {
   return tools.map((tool, index) => {
     const fn = tool.function || tool;
@@ -139,7 +172,90 @@ ${detailLines.length ? detailLines.join('\n') : '(no parameter details)'}`;
   }).join('\n\n');
 }
 
-export function buildXmlToolInstructions({ tools = [], toolChoice = 'auto', triggerSignal } = {}) {
+/**
+ * 精简渲染：名称 + 描述首句 + 参数名（标出必填）。
+ *
+ * 保留"参数名"是因为参数名本身就是最强的调用线索；去掉的是
+ * 每个参数的类型、约束、嵌套结构——这些在模型真正决定调用时
+ * 由客户端的 schema 校验兜底。
+ */
+function renderToolListCompact(tools) {
+  const lines = tools.map(tool => {
+    const fn = tool.function || tool;
+    const parameters = fn.parameters ?? {};
+    const props = parameters.properties && typeof parameters.properties === 'object' ? parameters.properties : {};
+    const required = Array.isArray(parameters.required) ? parameters.required.filter(k => typeof k === 'string') : [];
+
+    const params = Object.keys(props)
+      .map(name => (required.includes(name) ? `${name}*` : name))
+      .join(', ');
+
+    const desc = firstSentence(fn.description);
+    return `- ${fn.name}${desc ? `: ${desc}` : ''}${params ? `｜参数: ${params}` : ''}`;
+  });
+
+  return `${lines.join('\n')}
+
+（参数名后带 * 为必填。类型与取值范围以客户端定义为准确认。）`;
+}
+
+/**
+ * 分组渲染：只列名称，按名字前缀聚类。
+ *
+ * 为什么这时连描述都不给：188 个工具的完整描述同样有数万字符，
+ * 而模型在单轮里只会用到极少数。改为"先看分组找到候选，再按需确认参数"，
+ * 把识别成本从"通读全部"降为"按类定位"。
+ */
+function renderToolListGrouped(tools) {
+  const groups = new Map();
+  for (const tool of tools) {
+    const fn = tool.function || tool;
+    const name = String(fn.name || '');
+    if (!name) continue;
+    // 前缀聚类：取第一个分隔符之前的部分；无分隔符归入「其他」。
+    const key = /^[a-z0-9]+_[a-z0-9]+_/i.test(name)
+      ? name.split('_').slice(0, 2).join('_')
+      : (name.includes('_') ? name.split('_')[0] : '其他');
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(fn.name);
+  }
+
+  // 大组只列前若干个，其余用数量提示，避免列表本身又变成噪音。
+  const MAX_NAMES_PER_GROUP = 12;
+  const lines = [...groups.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([key, names]) => {
+      const shown = names.slice(0, MAX_NAMES_PER_GROUP).join(', ');
+      const rest = names.length > MAX_NAMES_PER_GROUP
+        ? ` …（另有 ${names.length - MAX_NAMES_PER_GROUP} 个同组工具）`
+        : '';
+      return `- ${key}（${names.length}）: ${shown}${rest}`;
+    });
+
+  return `共 ${tools.length} 个工具，按名称分组如下：
+
+${lines.join('\n')}
+
+调用方式：
+1. 先在上述分组里找到与任务相关的工具名
+2. 该工具的确切参数以客户端定义为准；不确定时先用最少的必填参数试调一次，
+   或向用户确认，不要臆造参数名`;
+}
+
+/**
+ * 按工具数量选择渲染策略。
+ *
+ * 阈值见 TOOL_PRESENTATION_THRESHOLDS。调用方可通过 toolPresentation 强制指定，
+ * 便于回滚或针对特定客户端调优。
+ */
+export function renderToolListByPresentation(tools, presentation = null) {
+  const mode = presentation || selectToolPresentation(tools);
+  if (mode === 'compact') return renderToolListCompact(tools);
+  if (mode === 'grouped') return renderToolListGrouped(tools);
+  return renderToolList(tools);
+}
+
+export function buildXmlToolInstructions({ tools = [], toolChoice = 'auto', triggerSignal, toolPresentation = null } = {}) {
   const normalized = normalizeTools(tools);
   if (!triggerSignal || !normalized.length || isNoneToolChoice(toolChoice)) return '';
 
@@ -261,7 +377,7 @@ export function buildXmlToolInstructions({ tools = [], toolChoice = 'auto', trig
 
   return `\n\n## 可用工具
 
-${renderToolList(normalized)}
+${renderToolListByPresentation(normalized, toolPresentation)}
 
 ## 工具调用决策（强制）
 
@@ -411,7 +527,7 @@ function isTitleGenerationRequest(req) {
   } catch { return false; }
 }
 
-export function createPromptPlan({ req, tools = [], toolChoice = 'auto' } = {}) {
+export function createPromptPlan({ req, tools = [], toolChoice = 'auto', toolPresentation = null } = {}) {
   const promptInjectionDisabled = isPromptInjectionDisabledForRequest(req);
   const isTitleGen = !promptInjectionDisabled && isTitleGenerationRequest(req);
   if (promptInjectionDisabled || isTitleGen) {
@@ -435,7 +551,12 @@ export function createPromptPlan({ req, tools = [], toolChoice = 'auto' } = {}) 
   const toolCallingEnabled = normalizedTools.length > 0 && !isNoneToolChoice(effectiveToolChoice);
   const triggerSignal = toolCallingEnabled ? generateTriggerSignal() : null;
   const toolInstructions = toolCallingEnabled
-    ? buildXmlToolInstructions({ tools: normalizedTools, toolChoice: effectiveToolChoice, triggerSignal })
+    ? buildXmlToolInstructions({
+      tools: normalizedTools,
+      toolChoice: effectiveToolChoice,
+      triggerSignal,
+      toolPresentation,
+    })
     : '';
 
   const parseToolCallsDetailed = (text) => parseXmlToolCallsDetailed(text, {
@@ -456,6 +577,7 @@ export function createPromptPlan({ req, tools = [], toolChoice = 'auto' } = {}) 
     toolCallingEnabled,
     triggerSignal,
     toolInstructions,
+    toolPresentation: toolCallingEnabled ? (toolPresentation || selectToolPresentation(normalizedTools)) : null,
     parseToolCalls,
     parseToolCallsDetailed,
     createStreamDetector: () => toolCallingEnabled
