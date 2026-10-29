@@ -276,6 +276,9 @@ export async function attemptToolParseWithRetry({
   const safeMaxAttempts = Math.max(1, Number.parseInt(maxAttempts, 10) || RETRY_LOOP_GUARD);
   let currentContent = String(content || '');
   let lastResult = null;
+  // 重试模式的粘滞状态：一旦因"只写计划句"进入 missing_tool_call，
+  // 后续轮次沿用同一模式，避免失败类型在两次判定间漂移。
+  let retryMode = null;
 
   for (let attempt = 0; attempt < safeMaxAttempts; attempt++) {
     lastResult = promptPlan.parseToolCallsDetailed
@@ -286,8 +289,28 @@ export async function attemptToolParseWithRetry({
       return { ...lastResult, attempts: attempt + 1, originalContent: content, finalContent: currentContent };
     }
 
-    const failureType = classifyToolFailure(currentContent, promptPlan.triggerSignal, lastResult);
-    if (failureType === 'no_fc') {
+    let failureType = classifyToolFailure(currentContent, promptPlan.triggerSignal, lastResult);
+
+    // no_fc 不等于"放弃"。
+    //
+    // 真实故障（2026-10-29 DSH 日志）：模型输出「我来生成一个…先创建文件，
+    // 再把完整实现写进去」，随后直接 stop——完全没有触发信号与 XML。
+    // 首次判定为 no_fc 时旧实现立即返回，runner 便抛出 TOOL_FORMAT_FAILED。
+    //
+    // 但这类"只写计划句"恰恰是最容易救回的：只要明确要求它当场输出调用即可。
+    // isMissingToolCallIntent 已存在且在此场景返回 true，只是从未在流内
+    // 路径被调用过（只在流结束后的 late recovery 分支用）。
+    //
+    // 因此这里把它提升为可重试的 failureType，走 missing_tool_call 提示词。
+    //
+    // 已经进入 missing_tool_call 重试后，失败类型必须保持粘滞：重试回来的
+    // 内容可能仍是纯文本（模型再次拒绝调用），此时 isMissingToolCallIntent
+    // 未必再为 true，若重新判定就会退回 no_fc，让上层收到与首次不一致的
+    // failureType——排查时会被误导成"第一次是格式问题、第二次不是"。
+    if (failureType === 'no_fc' && (retryMode === 'missing_tool_call' || isMissingToolCallIntent(currentContent, promptPlan.tools))) {
+      failureType = 'missing_tool_call';
+      retryMode = 'missing_tool_call';
+    } else if (failureType === 'no_fc') {
       return { toolCalls: null, content: lastResult?.content ?? (currentContent || null), failureType, attempts: attempt + 1, originalContent: content, finalContent: currentContent };
     }
 
@@ -304,9 +327,17 @@ export async function attemptToolParseWithRetry({
     }
 
     const errorDetails = diagnoseToolParseError(currentContent, promptPlan.triggerSignal, lastResult);
-    const retryPrompt = failureType === 'truncated'
-      ? getToolContinuationPrompt(currentContent, errorDetails, promptPlan.tools)
-      : getToolErrorRetryPrompt(currentContent, errorDetails, promptPlan.triggerSignal, promptPlan.tools);
+    // 按失败类型选提示词：truncated 要续写，missing_tool_call 要"把计划变成
+    // 调用"，其余才是"修正格式"。混用会让重试无效——用"修正格式"去纠正一个
+    // 根本没有格式的回复，模型只会再输出一次计划（实测两次重试均失败）。
+    let retryPrompt;
+    if (failureType === 'truncated') {
+      retryPrompt = getToolContinuationPrompt(currentContent, errorDetails, promptPlan.tools);
+    } else if (failureType === 'missing_tool_call') {
+      retryPrompt = getMissingToolCallRetryPrompt(currentContent, promptPlan.triggerSignal, promptPlan.tools);
+    } else {
+      retryPrompt = getToolErrorRetryPrompt(currentContent, errorDetails, promptPlan.triggerSignal, promptPlan.tools);
+    }
 
     const retryContent = await retryToolRequest({
       retryPrompt,
