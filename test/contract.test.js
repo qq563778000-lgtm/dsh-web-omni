@@ -25,7 +25,7 @@ try {
 
 const skip = dsh === null ? '未安装 @deepseek-ai/dsh-llm' : false;
 
-import { OmniAdapter, toCatalogModel, toDshModel } from '../lib/adapter.js';
+import { OmniAdapter } from '../lib/adapter.js';
 
 /**
  * 用真实的 cordis Context 装载 LlmRuntime。
@@ -41,46 +41,12 @@ function makeRuntime() {
   return { ctx, runtime };
 }
 
-test('toDshModel 产出符合 normalizeModelInfo 的形状', () => {
-  const meta = toDshModel({
-    id: 'deepseek-flash',
-    context_length: 1048576,
-    max_output_tokens: 65536,
-    input_modalities: ['text', 'image'],
-    capabilities: { thinking: true },
-  });
-
-  assert.deepEqual(meta.context, { contextWindow: 1048576 }, 'context 必须是嵌套结构');
-  assert.equal(meta.defaultMaxTokens, 65536, '输出上限字段名是 defaultMaxTokens');
-  assert.deepEqual(meta.reasoning.efforts.map(e => e.id), ['off', 'high']);
-  assert.deepEqual(meta.inputModalities, ['text', 'image']);
-  assert.equal(meta.maxTokens, undefined, '不该残留未识别的字段名');
-});
-
-test('toCatalogModel 补齐 provider 并只保留目录字段', () => {
-  const catalog = toCatalogModel({ id: 'm', input_modalities: ['text'] }, 'omni');
-  assert.equal(catalog.provider, 'omni');
-  assert.deepEqual(catalog, {
-    provider: 'omni',
-    id: 'm',
-    name: 'm',
-    inputModalities: ['text'],
-  });
-});
-
 test('DSH LlmRuntime 能注册本适配器并通过模型发现校验', { skip }, async () => {
   const { runtime } = makeRuntime();
   const adapter = new OmniAdapter({ providerId: 'omni', providerName: 'OmniAPI' });
 
   // 覆盖网络：直接给适配器喂一份真实形状的 /v1/models 数据。
-  adapter.listModels = async (provider) => [
-    toCatalogModel({
-      id: 'deepseek-flash',
-      context_length: 1048576,
-      input_modalities: ['text', 'image'],
-      capabilities: { thinking: true },
-    }, provider ?? 'omni'),
-  ];
+  // 内嵌版的 listModels 不访问网络，直接使用真实实现。
 
   runtime.registerAdapter(['omni'], adapter);
 

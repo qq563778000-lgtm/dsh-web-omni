@@ -14,10 +14,13 @@
   "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./client/client.js",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
+    "kernel",
+    "client",
     "cordis.patch.yml",
     "README.md"
   ],
@@ -27,6 +30,14 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
     }
   },
   "peerDependencies": {
@@ -39,6 +50,8 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js",
-    "test:e2e": "node scripts/e2e-live.mjs"
+    "test:e2e": "node scripts/e2e-live.mjs",
+    "sync:kernel": "node scripts/sync-kernel.mjs",
+    "check:kernel": "node scripts/sync-kernel.mjs --check"
   }
 }

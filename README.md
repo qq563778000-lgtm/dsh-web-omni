@@ -1,23 +1,26 @@
 # dsh-llm-omni
 
-把本地 [OmniAPI](../README.md) 注册为 **DeepSeek Harness（DSH）** 的 LLM provider。
+把 **OmniAPI 的转发能力内嵌进 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）** 的插件。
 
-装载后，DSH 的模型选择器里会多出一个 `omni` 来源，模型列表直接取自
-OmniAPI 的 `GET /v1/models`（含上下文长度、输出上限与能力声明）。
+**装完即用**：安装后在 DSH 设置页填入上游 DeepSeek 账号或 Token，
+模型选择器里就能选到 `omni` 开始对话。不需要另外启动 OmniAPI，
+不需要填服务地址，不需要编辑配置文件。
 
-## 为什么需要它
+## 它是什么
 
-DSH 已内置 `@deepseek-ai/dsh-llm-pi-ai`，支持用 `api: openai-completions`
-把任意 OpenAI 兼容网关接进来，**纯配置就能连上 OmniAPI**。本插件存在的理由
-是下面两点配置做不到的事：
+OmniAPI 把一个 DeepSeek Web 账号池包装成 OpenAI 兼容 API。本插件把它的
+转发内核（凭据池、PoW 求解、上游流解析）**整份随插件分发**，在 DSH 进程内
+直接运行——因此没有"先起服务再连过去"这一步。
 
-| 能力 | pi-ai 网关配置 | 本插件 |
-|------|---------------|--------|
-| 读取 OmniAPI 的上下文/输出上限元数据 | 忽略扩展字段 | 直接采用 |
-| 把 `reasoning_content` 映射为 DSH 的 reasoning 块 | 需试探 `compat`，常丢失或混入正文 | 显式分离 |
-| 免手填 baseURL 与模型 | 需手写 | 默认指向本地 |
-
-> 如果你只想要"能连上"，用 pi-ai 配置即可，不必装本插件。
+```
+DSH 进程
+└── dsh-llm-omni 插件
+    ├── lib/adapter.js       DSH 的 LlmAdapter 契约实现
+    ├── lib/runtime.js       内核引导 + 配置隔离
+    ├── lib/credentials.js   设置页的凭据读写
+    ├── lib/routes.js        设置页的本机状态端点
+    └── kernel/              ← 从主项目 src/ 同步的转发内核
+```
 
 ## 安装
 
@@ -25,74 +28,84 @@ DSH 已内置 `@deepseek-ai/dsh-llm-pi-ai`，支持用 `api: openai-completions`
 dsh plugin --profile <profile> add <本目录路径>
 ```
 
-或从本地路径安装：
+装好后打开 DSH 设置页，找到 **OmniAPI** 一节：
 
-```sh
-dsh plugin --profile web add file:/path/to/Any2api/dsh-llm-omni
-```
+1. 选择「添加 Token」粘贴 DeepSeek Web Token，或「添加账号」填邮箱密码
+2. 保存后点「测试全部凭据」确认可用
+3. 在模型选择器里选 `omni` 开始对话
 
-安装后重启 DSH，模型选择器中会出现 `omni`。
+## 与"用 pi-ai 网关连 OmniAPI"的区别
+
+DSH 内置的 `dsh-llm-pi-ai` 支持 `api: openai-completions` 指向任意
+OpenAI 兼容网关，纯配置就能连上 OmniAPI。本插件的增量在于：
+
+| | pi-ai 网关配置 | 本插件 |
+|---|---|---|
+| 需要 OmniAPI 独立运行 | 是 | **否** |
+| 需要手填地址与 Key | 是 | **否** |
+| 读取模型能力元数据 | 忽略扩展字段 | 直接采用 |
+| 分离 `reasoning_content` | 需试探 `compat` | 显式映射 |
+| 在 DSH 里看凭据死活 | ❌ | ✅ 设置页 |
 
 ## 配置
 
-在 `cordis.patch.yml` 中覆盖（profile 根目录）：
+一般不需要改。需要覆盖时在 profile 的 `cordis.patch.yml`：
 
 ```yaml
 - id: omni
   config:
-    baseURL: http://127.0.0.1:8080
-    apiKeyEnv: OMNI_API_KEY      # 读取该环境变量作为 OmniAPI 的 API Key
+    dataDir: C:/Users/<you>/.dsh/plugin-data/dsh-llm-omni
+    providerId: omni
     providerName: OmniAPI
-    timeoutMs: 300000
+    contextWindow: 1048576
+    maxOutputTokens: 65536
+    kernelTimeoutMs: 60000
 ```
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
-| `baseURL` | `http://127.0.0.1:8080` | OmniAPI 服务地址 |
-| `apiKeyEnv` | `OMNI_API_KEY` | 存放 OmniAPI API Key 的环境变量名 |
-| `apiKey` | — | 直接给明文 Key（不推荐，会进配置文件） |
-| `providerId` | `omni` | 路由名，即 DSH 里选择时看到的 provider id |
-| `providerName` | `OmniAPI` | 选择器中的展示名 |
-| `timeoutMs` | `300000` | 单次请求超时 |
+| `dataDir` | `<DSH_HOME>/plugin-data/dsh-llm-omni` | 凭据与配置的落盘位置 |
+| `providerId` | `omni` | 路由名 |
+| `providerName` | `OmniAPI` | 选择器展示名 |
+| `contextWindow` | `1048576` | 上报给 DSH 的上下文长度 |
+| `maxOutputTokens` | `65536` | 上报给 DSH 的输出上限 |
+| `kernelTimeoutMs` | `60000` | 首次对话等待凭据池就绪的上限 |
 
-## 凭据边界
+## 数据与安全
 
-本插件**不接触任何上游凭据**：
+- 凭据只存在 `dataDir/config.json`，**不写入 DSH 的 profile 配置**
+- 插件会强制把内核的配置路径指向自己的 `dataDir`，不会读到主项目
+  OmniAPI 的 `.env` / `config.json`（避免两套系统共用账号）
+- 设置页与 HTTP 响应只返回掩码（`abcdef...7890`），不提供"查看明文"入口
+- 状态端点仅接受本机请求，并校验 Host / Origin 防 DNS rebinding
 
-- 上游的 DeepSeek token / 账号只存在于 OmniAPI 的凭据池中；
-- 插件只用 OmniAPI 自己的 API Key 与本地服务通信；
-- 日志不打印 `Authorization` 头。
+## 关于 `kernel/`
 
-因此即使 DSH 的配置文件泄露，也不会泄露上游账号。
+`kernel/` 是从主项目 `src/` 生成的副本，**不要手改**。主项目修复后同步：
 
-## 流式映射
-
-| OmniAPI (OpenAI Chat Completions) | DSH chunk |
-|---|---|
-| `delta.reasoning_content` | `reasoning` 块 + `reasoning-delta` |
-| `delta.content` | `text` 块 + `text-delta` |
-| `delta.tool_calls[].index` | `tool-call-delta`（以 index 为稳定主键） |
-| `usage` | `usage { inputTokens, outputTokens }` |
-| `finish_reason` | `finish { kind }` |
-| `data: {"error":{...}}` | 抛 `LlmError`，**不**当作文本 |
-
-最后一行是刻意为之：OmniAPI 在流内失败时下发错误对象，若把它当正文，
-用户会把报错读成模型回答。
+```sh
+npm run sync:kernel     # 从 ../src 重新生成
+npm run check:kernel    # 检查是否漂移（CI 用）
+```
 
 ## 测试
 
 ```sh
-npm test                    # 单元 + DSH 契约测试（29 项）
-npm run test:e2e            # 真实 OmniAPI 端到端（需服务已启动）
+npm test          # 45 项（DSH 未安装时 3 项契约测试自动跳过）
+npm run test:e2e  # 真实上游对话，需 OmniAPI_TOKEN
 ```
 
 `contract.test.js` 用**真实的** `@deepseek-ai/dsh-llm` 的 `LlmRuntime`
-装载本适配器，校验 DSH 的运行时约束（`provider` 必须等于注册路由、
-`context` 必须是 `{ contextWindow }` 等）。这些约束只存在于 DSH 实现里，
-不测就只能等真实启动时才发现。DSH 未安装时该组自动跳过。
+装载本适配器，校验 DSH 未文档化的运行时约束（`provider` 必须等于注册路由、
+`context` 必须是 `{ contextWindow }`、`defaultMaxTokens` 等）。
 
 端到端：
 
 ```sh
-OMNI_API_KEY=<OmniAPI 的 API Key> npm run test:e2e
+OMNI_TOKEN=<DeepSeek Web Token> npm run test:e2e
 ```
+
+## 限制
+
+- 只在 `dsh 0.2.1-rc.2` 上做过契约级验证；`rc.3` 需实机确认。
+- 图片仅支持 URL 或 base64 data；本地附件引用需要宿主附件服务内联。
