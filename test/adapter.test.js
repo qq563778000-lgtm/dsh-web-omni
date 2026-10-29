@@ -135,3 +135,29 @@ test('stream 在缺少 messages 时立即报错', async () => {
   };
   await assert.rejects(iterate, /缺少 messages/);
 });
+
+test('stream 必须使用调用方传入的 model，而不是配置里的固定值', async () => {
+  // 真实缺陷（2026-10 实机测试发现）：曾经硬编码 config.modelId，
+  // DSH 模型选择器里换成任何模型，实际请求的都是默认模型——用户的选择
+  // 完全无效，且不报错，表现为"选什么都没差别"。
+  //
+  // 行为验证：用一个必然不被内核识别的模型名，若仍走配置值就会成功，
+  // 正确实现则应在内层抛错。
+  const adapter = new OmniAdapter({ modelId: 'deepseek-flash' });
+
+  const iterate = async () => {
+    for await (const _ of adapter.stream({
+      model: 'definitely-not-a-real-model',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    })) { /* 不应产出 */ }
+  };
+
+  await assert.rejects(
+    iterate,
+    (err) => {
+      // 无论哪一层包装，错误信息都应体现模型名，而不是静默用默认模型作答
+      assert.match(String(err.message), /not-a-real-model|未知模型|Unknown model/i);
+      return true;
+    },
+  );
+});
