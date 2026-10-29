@@ -6,14 +6,25 @@ import {
   normalizeTools,
 } from '../utils/response-utils.js';
 
-const TRIGGER_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+/**
+ * 工具调用触发信号。
+ *
+ * 为什么固定而非每轮随机（2026-10 调整）：
+ *
+ * 触发信号的作用只有一个——让流式解析器尽早定位工具调用块的起点。
+ * 解析器是逐字扫描字符串找这个标记，信号本身取什么值对它没有区别。
+ *
+ * 但随机化有真实代价：提示词里要反复解释"本轮信号是 X"，模型每轮都要
+ * 重新对齐；而这个字符串在提示词中出现 12 次，也是冗余的来源之一。
+ * 固定后提示词可以只声明一次，模型跨轮记忆一致。
+ *
+ * 误判风险与随机方案相同：解析器还要求信号后紧跟 <function_calls>，
+ * 用户消息里偶尔出现该字符串也不会被当成调用。
+ */
+export const FIXED_TRIGGER_SIGNAL = '<Function_Start/>';
 
-export function generateTriggerSignal(length = 4) {
-  let suffix = '';
-  for (let i = 0; i < length; i++) {
-    suffix += TRIGGER_CHARS[Math.floor(Math.random() * TRIGGER_CHARS.length)];
-  }
-  return `<Function_${suffix}_Start/>`;
+export function generateTriggerSignal() {
+  return FIXED_TRIGGER_SIGNAL;
 }
 
 function forcedToolName(toolChoice) {
@@ -379,28 +390,16 @@ export function buildXmlToolInstructions({ tools = [], toolChoice = 'auto', trig
 
 ${renderToolListByPresentation(normalized, toolPresentation)}
 
-## 工具调用决策（强制）
+## 何时调用工具
 
-1. 能直接回答的问题 → 只输出自然语言 Markdown，不要输出任何 XML
-2. 需要工具才能推进的任务 → **同一次回复必须同时包含**：
-   - 可选的一句简短说明（可省略）
-   - 触发信号（独占一行）：\`${triggerSignal}\`
-   - 紧跟的完整 \`<function_calls>...</function_calls>\` 块
-3. **硬规则：说了要做，就必须当场调用。** 只要正文出现以下任一意图词，却没有输出完整 XML，回复视为无效：
-   - 中文：读取/查看/搜索/探索/分析/获取/打开/列出/运行/执行/修改/编辑/写入/创建/检查/扫描/梳理/了解/提问/确认/选择
-   - 英文：read/inspect/check/search/grep/list/scan/open/run/execute/edit/modify/write/create/explore/analyze/ask
-4. 禁止只输出计划句就结束，例如：
-   - "我先读取…" / "接下来我会查看…" / "我来分析…" / "我们先获取…" / "我先确认一下…"
-   - 这些句子后面必须立刻跟上触发信号 + function_calls，否则任务死锁
+- 能直接回答 → 只输出自然语言，不要出现任何 XML
+- 需要工具 → **同一次回复**里给出：一句简短说明（可省略）+ 触发信号（独占一行）+ 紧跟的 \`<function_calls>\` 块
+- **说了就要当场做**：正文一旦出现「读取/搜索/分析/运行/修改/创建/确认」这类意图词，却没有输出完整 XML，视为无效回复，任务死锁。禁止只写「我先读取…」「接下来我会查看…」就停下
+- 收到工具结果后：任务没完成就继续调用下一个工具；全部完成才用自然语言总结，禁止空内容结束
+- 多个独立调用放同一个 \`<function_calls>\` 块并行发出，不要分步串行
 ${interactiveGuide}
-- 工具执行结果返回后（以"[系统通知]"开头的消息），先判断任务是否全部完成：未完成就继续调用下一个所需工具——修改文件后重新 Read 验证、修复后重新运行测试、根据搜索结果继续读取文件，都是正当且推荐的再次调用
-- 任务全部完成后，才用自然语言总结本轮做了什么、结果如何；禁止以空内容结束
-- 不要用完全相同的参数重复紧邻的上一次调用（它的结果已经在上面给出）
-- 多个独立的工具调用应在同一次回复中并行发出，不要分步串行；把当前需要完成的调用一次发齐，收到结果后继续
 ${codingGuide}
-## 输出格式（唯一合法格式）
-
-调用工具时**必须**严格按以下 XML 格式输出，一个字符都不能少：
+## 输出格式（唯一合法）
 
 \`\`\`
 ${triggerSignal}
@@ -412,7 +411,7 @@ ${triggerSignal}
 </function_calls>
 \`\`\`
 
-### 正确完整示例
+示例（完整）：
 
 \`\`\`
 好的，我先读取 README。
@@ -426,91 +425,32 @@ ${triggerSignal}
 </function_calls>
 \`\`\`
 
-### 发送前自检清单（每条都必须通过，缺一即丢弃）
+## 结构检查（提交前逐条确认）
 
-1. 是否输出了触发信号 \`${triggerSignal}\`（独占一行、只出现一次、与示例完全一致）？
-2. 触发信号后是否立刻是 \`<function_calls>\`，最后是否有 \`</function_calls>\`？
-3. 每个 \`<function_call>\` 内是否同时有 \`<tool>\` 和 \`<args_json>\`？
-4. \`<args_json>\` 是否用 \`<![CDATA[ ... ]]>\` 包裹（结束必须是 **两个**右方括号 \`]]>\`，不是 \`]>\`）？
-5. CDATA 内是否是完整 JSON 对象：以 \`{\` 开头、以 \`}\` 结尾，引号/括号成对？
-6. 参数名是否都在工具定义里？有没有多余字段（description/comment/note/justification）？
-7. 若调用 AskUserQuestion：每个 question 的 options 是否只有 2–4 项？header/label 是否过长？
-8. 中文叙述引号是否用了「」或‘’，而不是在 JSON 字符串值里再嵌未转义的 ASCII "？
-9. \`</function_calls>\` 之后是否没有任何文字？
+1. \`${triggerSignal}\` 独占一行、只出现一次，且在 think 块**外**
+2. 信号后紧跟 \`<function_calls>\`，每个调用同时有 \`<tool>\` 与 \`<args_json>\`
+3. \`<args_json>\` 用 \`<![CDATA[ … ]]>\` 包裹，结束是**两个**右方括号（\`]]>\`，不是 \`]>\`）
+4. CDATA 内是完整 JSON：\`{\` 开头、\`}\` 结尾；字符串内换行写 \`\\n\`，反斜杠双写
+5. 参数名只取工具定义里列出的，不加 description/comment/note/justification 等多余字段
+6. \`</function_calls>\` 之后不写任何文字
 
-## 🚫 致命错误示范（真实踩坑，整条调用会被丢弃）
+## 常见错误（真实踩坑，整条调用会被丢弃）
 
-### A. 只写计划、不输出 XML（最常见，任务直接死锁）
-
-| ❌ 错误 | 原因 |
+| ❌ | 原因 |
 |---|---|
-| \`好的，我先读取项目的关键文档和目录结构，来为你整理一份分析报告。\` | 说了"读取"但没有输出 XML |
-| \`我来帮你全面分析这个项目。我会先并行探索项目的结构、技术栈、主要功能模块和架构设计。\` | 说了"探索/分析"但没有输出 XML |
-| \`好的，我们先获取设置页完整代码中关于"默认书源"的部分，以便进行针对性优化。\` | 说了"获取"但没有输出 XML |
-| \`我来读取设置页面主代码和主题相关文件，了解当前实现后再做优化。\` | 说了"读取"但没有输出 XML |
-| \`我先看看项目结构再决定怎么做。\` | 说了"看看"但没有输出 XML |
-| \`我会先并行读取相关源文件，以确保修改时与现有设计系统保持一致。\` | 说了“读取源文件”，但没有输出 XML |
-| \`我先确认一下优化范围。\` | 说了"确认"但没有输出 XML（应改用 AskUserQuestion 或直接给方案） |
-| \`先定位到目标页面/组件再继续。\` | 说了“定位到”，但没有输出 XML |
+| 只写「我来读取…」不输出 XML | 任务死锁，最常见 |
+| 输出孤立的 \`<tool>名字</tool>\` | 缺 function_calls / args_json，不会被执行 |
+| CDATA 结束写成 \`]>\` 或中途插入 \`]]>\` | 块无法闭合或 JSON 被切断 |
+| JSON 漏最后的 \`}\` | args_json 解析失败 |
+| 叙述里用 ASCII 双引号夹词 | 破坏 JSON 字符串边界，请用「」 |
+| 工具名写成 shell/terminal 等别名 | 必须与工具列表完全一致 |
+| 用 \`工具名({...})\`、\`[Call Tool]\`、\`<ApplyPatch>...</ApplyPatch>\`、纯 JSON 宣称调用 | 一律不会被执行 |
 
-### B. 结构残缺 / 标签错误
-
-| ❌ 错误片段 | 原因 |
-|---|---|
-| 只有 \`<tool>shell_command</tool>\` 重复多次 | 缺 function_calls / args_json，裸标签不会被执行 |
-| CDATA 结束写成 \`]>\` | 必须是 \`]]>\`，少一个右方括号会让整块 XML 无法闭合 |
-| JSON 写到一半插入 \`]]\` 或 \`]]>\` 再接着写参数，如 \`..."}]], "replace_all": false}}\` | CDATA 被提前闭合、JSON 被切成两半；\`]]>\` 只能在参数 JSON 完整结束后出现一次 |
-| JSON 末尾漏 \`}\`，如 \`{"command":"...ui\\\\"\` | 对象未闭合，args_json 解析失败 |
-| 中文叙述里用 ASCII 双引号夹词：\`"是否允许为"优化样式"创建"\` | 破坏 JSON 字符串边界；叙述引号请用「」或‘’ |
-| 触发信号写错 / 漏写 / 写在 think 块里 | 触发信号必须在 think 外、独占一行、与示例完全一致 |
-| \`</function_calls>\` 后还有解释文字 | 闭合标签后不得有任何文字 |
-
-### C. 参数 / schema 越界
-
-| ❌ 错误 | 原因 |
-|---|---|
-| AskUserQuestion 的 options 写了 5 个选项 | 常见 maxItems=4，第 5 项会导致校验失败 |
-| header / label 过长 | 常见 maxLength 限制 |
-| args 里多了 description / comment / note / justification | 工具定义未声明的字段会导致校验失败 |
-| shell/terminal/execute 等别名 | 工具名必须与可用工具列表完全一致（除非客户端本身暴露该名） |
-| Bash 的 command 写成数组 | command 必须是字符串 |
-
-### ✅ 同一意图的正确写法
-
-\`\`\`
-我来读取设置页面主代码。
-
-${triggerSignal}
-<function_calls>
-  <function_call>
-    <tool>${exampleToolName}</tool>
-    <args_json><![CDATA[${exampleArgs}]]></args_json>
-  </function_call>
-</function_calls>
-\`\`\`
-
-**一句话铁律：只要说了要调用工具，同一轮回复必须输出“触发信号 + <function_calls>”。只写计划 = 任务死锁。**${editList && writeList ? `
-
-**编辑铁律：已存在文件的修改必须用 ${editList} 精确替换；${writeList} 只用于创建新文件，或用户明确要求且你已读过全文的整文件重写。**` : ''}
-
-## 必须遵守的规则
-
-- 不需要工具时，直接回复文本，不要输出任何 XML
-- 收到工具结果后：任务未完成则按同样格式继续输出下一批工具调用；全部完成则只输出自然语言总结，不再输出任何 XML
-- 调用工具时必须先输出触发信号（独占一行、与示例完全一致、只出现一次）。不输出触发信号直接输出 <function_calls> 不会被即时识别，必须等整段内容全部到达后才能解析，大幅增加延迟,容易导致客户端超时断开
-- 上述"触发信号 + XML"是唯一有效的调用方式；禁止用 工具名({"参数":...}) 伪代码、[调用 工具名] {"参数":...}、[Call Tool] {...}、Action/Action Input、Tool/Input、<ApplyPatch>...</ApplyPatch>、纯 JSON 或自然语言宣称调用——这些格式一律不会被执行
-- **只要你在正文里表达了"我来/我会/接下来/先"去"查看/读取/搜索/探索/分析/运行/修改…项目/文件/目录/代码…"这类意图，就必须在同一次回复里立即输出完整的"触发信号 + <function_calls>"块把它执行掉；禁止只写一句计划或说明然后停下，那样任务会直接死锁**
-- 触发信号后紧跟 <function_calls>（中间可有空白）
-- 所有调用放在一个 <function_calls> 块内，每个工具一个 <function_call>
-- **<tool> 只能出现在 <function_call> 内部，且必须与配套的 <args_json> 一起出现；禁止输出孤立的 <tool>名称</tool>**
-- <tool> 的值必须与上方可用工具列表中的名称完全一致
-- <args_json> 内是一个合法且完整的 JSON 对象（{ 开头、} 结尾），参数名和类型匹配工具定义，字符串值内不得出现字面换行
-- CDATA 开始必须是 <![CDATA[，结束必须是 ]]>；禁止写成 ]> 或 ]]]>
-- JSON 字符串内的换行必须写成 \\n，反斜杠必须双写（Windows 路径 "D:\\\\repo\\\\a.js"）；路径以反斜杠结尾时同样双写
-- 中文叙述引号优先用「」或‘’，不要在 JSON 字符串值里再嵌一套未转义的 ASCII "
-- **<args_json> 内只能包含该工具定义里列出的参数——禁止添加工具定义里没有的字段（如 description、comment、note、justification 等）**
-- </function_calls> 之后不得有任何文字${constraintText}`;
+**铁律：说了要调用工具，同一轮就必须输出「触发信号 + <function_calls>」。**
+${editList && writeList ? `
+**编辑铁律：已存在文件的修改必须用 ${editList} 精确替换；${writeList} 只用于创建新文件，或用户明确要求且你已读过全文的整文件重写。**` : ''}${constraintText}`;
 }
+
 
 function isTitleGenerationRequest(req) {
   try {
