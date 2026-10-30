@@ -1,4 +1,4 @@
-# dsh-llm-omni bundle layer.
+# dsh-web-omni bundle layer.
 #
 # 条目的 id 是设置页里这块配置的命名空间，覆盖本行配置时请保持不变，
 # 否则 DSH 会把它当成另一条路由。
@@ -7,4 +7,4 @@
 # 多出一个 omni 来源，用户填好凭据前不会产生任何上游请求。
 - insert:
     - id: omni
-      name: dsh-llm-omni
+      name: dsh-web-omni

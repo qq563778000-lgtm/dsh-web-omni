@@ -1,5 +1,5 @@
 /**
- * dsh-llm-omni 设置页
+ * dsh-web-omni 设置页
  *
  * DSH 的客户端插件是预打包模块：宿主用 window.__ModuleLoader__.load
  * 注入一个 factory，我们从 factory 参数拿到 require('react')，返回
@@ -13,16 +13,16 @@
  * 页面**不显示凭据明文**：后端返回的已是掩码，这里也不再提供"查看"入口。
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-llm-omni',
+  id: 'dsh-web-omni',
   factory: (require) => {
     const React = require('react');
     const h = React.createElement;
     const { useEffect, useState, useCallback } = React;
 
-    const NS = 'dsh-llm-omni';
-    const STATUS_PATH = '/api/dsh-llm-omni/status';
-    const CREDENTIALS_PATH = '/api/dsh-llm-omni/credentials';
-    const TEST_PATH = '/api/dsh-llm-omni/test';
+    const NS = 'dsh-web-omni';
+    const STATUS_PATH = '/api/dsh-web-omni/status';
+    const CREDENTIALS_PATH = '/api/dsh-web-omni/credentials';
+    const TEST_PATH = '/api/dsh-web-omni/test';
 
     const text = {
       title: 'OmniAPI',

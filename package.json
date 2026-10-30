@@ -1,5 +1,5 @@
 {
-  "name": "dsh-llm-omni",
+  "name": "dsh-web-omni",
   "version": "0.1.0",
   "description": "DSH provider 插件：把 DeepSeek Web 转发能力内嵌进 DeepSeek Harness，装完填账号即可用",
   "keywords": [
@@ -59,10 +59,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/<你的用户名>/dsh-llm-omni.git"
+    "url": "git+https://github.com/qq563778000-lgtm/dsh-web-omni.git"
   },
   "bugs": {
-    "url": "https://github.com/<你的用户名>/dsh-llm-omni/issues"
+    "url": "https://github.com/qq563778000-lgtm/dsh-web-omni/issues"
   },
-  "homepage": "https://github.com/<你的用户名>/dsh-llm-omni#readme"
+  "homepage": "https://github.com/qq563778000-lgtm/dsh-web-omni#readme"
 }

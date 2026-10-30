@@ -30,13 +30,13 @@ async function loadClient() {
 
 test('客户端模块通过 __ModuleLoader__ 注册', async () => {
   const loaded = await loadClient();
-  assert.deepEqual(Object.keys(loaded), ['dsh-llm-omni']);
+  assert.deepEqual(Object.keys(loaded), ['dsh-web-omni']);
 });
 
 test('factory 使用宿主传入的 require 取 react', async () => {
   const loaded = await loadClient();
   const requested = [];
-  const mod = loaded['dsh-llm-omni']((name) => {
+  const mod = loaded['dsh-web-omni']((name) => {
     requested.push(name);
     if (name === 'react') return reactStub;
     throw new Error(`未知模块 ${name}`);
@@ -49,7 +49,7 @@ test('factory 使用宿主传入的 require 取 react', async () => {
 
 test('apply 注册 settings.section', async () => {
   const loaded = await loadClient();
-  const mod = loaded['dsh-llm-omni'](() => reactStub);
+  const mod = loaded['dsh-web-omni'](() => reactStub);
 
   const registered = [];
   mod.apply({
@@ -64,7 +64,7 @@ test('apply 注册 settings.section', async () => {
 
   assert.equal(registered.length, 1);
   assert.equal(registered[0].meta.name, 'settings.section');
-  assert.equal(registered[0].meta.id, 'dsh-llm-omni');
+  assert.equal(registered[0].meta.id, 'dsh-web-omni');
   assert.equal(typeof registered[0].meta.label, 'function');
   assert.equal(registered[0].meta.label(), 'OmniAPI');
   assert.equal(typeof registered[0].render, 'function');
@@ -72,6 +72,6 @@ test('apply 注册 settings.section', async () => {
 
 test('inject 声明了 slots 依赖', async () => {
   const loaded = await loadClient();
-  const mod = loaded['dsh-llm-omni'](() => reactStub);
+  const mod = loaded['dsh-web-omni'](() => reactStub);
   assert.ok(mod.inject.includes('slots'));
 });

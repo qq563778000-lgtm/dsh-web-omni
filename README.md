@@ -1,4 +1,4 @@
-# dsh-llm-omni
+# dsh-web-omni
 
 把 **OmniAPI 的转发能力内嵌进 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）** 的插件。
 
@@ -14,7 +14,7 @@ OmniAPI 把一个 DeepSeek Web 账号池包装成 OpenAI 兼容 API。本插件�
 
 ```
 DSH 进程
-└── dsh-llm-omni 插件
+└── dsh-web-omni 插件
     ├── lib/adapter.js       DSH 的 LlmAdapter 契约实现
     ├── lib/runtime.js       内核引导 + 配置隔离
     ├── lib/credentials.js   设置页的凭据读写
@@ -25,7 +25,7 @@ DSH 进程
 ## 安装
 
 ```sh
-dsh plugin --profile <profile> add github:<你的用户名>/dsh-llm-omni
+dsh plugin --profile <profile> add github:qq563778000-lgtm/dsh-web-omni
 ```
 
 `<profile>` 是你的 DSH profile 名（桌面端通常是 `desktop`，Web 端是 `web`）。
@@ -46,7 +46,7 @@ dsh plugin --profile <profile> add github:<你的用户名>/dsh-llm-omni
 ## 更新
 
 ```sh
-dsh plugin --profile <profile> add github:<你的用户名>/dsh-llm-omni
+dsh plugin --profile <profile> add github:qq563778000-lgtm/dsh-web-omni
 ```
 
 重新执行安装命令即可升级到最新版。
@@ -71,7 +71,7 @@ OpenAI 兼容网关，纯配置就能连上 OmniAPI。本插件的增量在于�
 ```yaml
 - id: omni
   config:
-    dataDir: C:/Users/<you>/.dsh/plugin-data/dsh-llm-omni
+    dataDir: C:/Users/<you>/.dsh/plugin-data/dsh-web-omni
     providerId: omni
     providerName: OmniAPI
     contextWindow: 1048576
@@ -81,7 +81,7 @@ OpenAI 兼容网关，纯配置就能连上 OmniAPI。本插件的增量在于�
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
-| `dataDir` | `<DSH_HOME>/plugin-data/dsh-llm-omni` | 凭据与配置的落盘位置 |
+| `dataDir` | `<DSH_HOME>/plugin-data/dsh-web-omni` | 凭据与配置的落盘位置 |
 | `providerId` | `omni` | 路由名 |
 | `providerName` | `OmniAPI` | 选择器展示名 |
 | `contextWindow` | `1048576` | 上报给 DSH 的上下文长度 |
@@ -96,10 +96,31 @@ OpenAI 兼容网关，纯配置就能连上 OmniAPI。本插件的增量在于�
 - 设置页与 HTTP 响应只返回掩码（`abcdef...7890`），不提供"查看明文"入口
 - 状态端点仅接受本机请求，并校验 Host / Origin 防 DNS rebinding
 
+## 使用须知
+
+本插件把你**自己的** DeepSeek Web 账号（或 Token）接入 DSH，不提供任何凭据。
+
+发布前请了解：
+
+- **它使用的是 Web 端接口，不是官方 API。** 上游的接口、风控与限额随时可能
+  变化，插件可能因此失效。这不是本插件能保证的部分。
+- **自动化调用 Web 端可能违反上游服务条款**，存在账号被限流或封禁的可能。
+  请自行评估，风险自负。
+- 不要把账号密码或 Token 分享给他人；不要把本插件部署成对外提供的公共
+  服务（那会把你的账号暴露给不受控的使用量）。
+- 凭据只存在你自己机器的 `dataDir` 下，插件不会上传到任何地方。
+
+如果需要有 SLA 保障、可商用授权的调用方式，请使用 DeepSeek 官方 API。
+
+## 来源
+
+内核（`kernel/`）来自 OmniAPI 项目，由 `scripts/sync-kernel.mjs` 同步。
+本仓库是它的独立 DSH 插件版本，可单独安装使用，不需要另行运行 OmniAPI。
+
 ## 测试
 
 ```sh
-npm test    # 62 项
+npm test
 ```
 
 其中 `contract.test.js` 用**真实的** `@deepseek-ai/dsh-llm` 的 `LlmRuntime`
@@ -111,7 +132,14 @@ npm test    # 62 项
 
 - 在 `dsh 0.2.1-rc.2` 与 `rc.3` 上验证过契约；更高版本需实机确认。
 - 上游 DeepSeek Web 只有思考的**开/关**，没有 effort 分级。
-  插件向 DSH 声明全量 7 档（`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`），
-  内部把非 `off` 的档位统一映射为「开启思考」——档位可选，但强度无差异。
+  插件声明 `off`/`medium`/`high`/`xhigh`/`max` 五档，内部把非 `off` 的档位
+  统一映射为「开启思考」——档位可选，但强度无差异。
+- 长会话（上行超过约 150K 字符）会自动压缩较早的工具结果并换新会话，
+  以避开上游的静默空响应。
 - 图片仅支持 URL 或 base64 data；本地附件引用需要宿主附件服务内联。
 - 上游若改变 `create_pow_challenge` 或 SSE 格式，需重新同步转发内核。
+
+## 许可
+
+MIT，见 [LICENSE](./LICENSE)。
+

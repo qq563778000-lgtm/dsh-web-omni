@@ -104,7 +104,22 @@ function projectCommit() {
 }
 
 function main() {
-  if (!existsSync(SOURCE_ROOT)) fail(`找不到主项目源码目录: ${SOURCE_ROOT}`);
+  if (!existsSync(SOURCE_ROOT)) {
+    // 独立发布后的常态：本仓库不含主项目 src/，kernel/ 是已同步好的产物。
+    //
+    // 此时不能直接 fail——CI 和普通使用者跑 npm test 时会连带触发这里的
+    // 检查，报一个与"能不能用"无关的错误只会造成困惑。改为明确说明：
+    // 这是开发期脚本，独立仓库里 kernel/ 即为事实来源。
+    if (checkOnly) {
+      console.log('ℹ 未找到主项目 src/（独立仓库形态），跳过内核漂移检查；kernel/ 为已同步产物。');
+      return;
+    }
+    fail(
+      `找不到主项目源码目录: ${SOURCE_ROOT}\n`
+      + '  本脚本用于从主项目 src/ 同步内核。独立发布仓库不含 src/，\n'
+      + '  kernel/ 已是同步好的产物，无需运行此脚本。',
+    );
+  }
 
   // --check 只比较指纹，不写盘。
   if (checkOnly) {
