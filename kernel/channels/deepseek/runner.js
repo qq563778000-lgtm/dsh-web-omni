@@ -64,6 +64,42 @@ import {
  */
 const CONTEXT_COMPACT_THRESHOLD_CHARS = 150000;
 
+/**
+ * 迭代压缩，直到**实际要发送的 prompt** 落在阈值以内。
+ *
+ * 为什么不能只压缩一次：compactToolResults 按原始消息估算长度，而真正发给
+ * 上游的是 preprocessMessagesForToolify 包装后的文本——每条工具结果都会被
+ * 加上说明模板，"估算 149K、实际 182K"是实测值（膨胀约 1.23 倍）。
+ *
+ * 后果很严重：压缩"自认为达标"就停了，实际 prompt 仍超上游上限，于是
+ * 2026-10-30 出现「阈值 150K 却发出 260K」的请求，模型拿到超长上下文后
+ * 返回空流。只按估算值压缩等于没有压缩。
+ *
+ * 这里每轮都用真实构建路径量一次长度，不达标就继续压；压不动时提前退出，
+ * 把"确实压不下来"的情况交给后续的关闭思考来兜底。
+ */
+function compactUntilPromptFits({ messages, triggerSignal, toolInstructions, maxRounds = 4 }) {
+  const measure = (msgs) => {
+    const processed = preprocessMessagesForToolify(msgs, triggerSignal);
+    return (buildPromptFromMessages(processed).trim() + (toolInstructions || '')).length;
+  };
+
+  let current = messages;
+  let compacted = false;
+  for (let round = 0; round < maxRounds; round++) {
+    if (measure(current) <= CONTEXT_COMPACT_THRESHOLD_CHARS) break;
+    // 目标留出余量：估算与实际的差距随内容构成浮动，压到 70% 更稳。
+    const next = compactToolResults(current, {
+      maxChars: Math.floor(CONTEXT_COMPACT_THRESHOLD_CHARS * 0.7),
+      keepRecent: 2,
+    });
+    if (next === current) break; // 没有可再压缩的工具结果
+    current = next;
+    compacted = true;
+  }
+  return { openAIMessages: current, compacted };
+}
+
 async function extractUploads(messages, token) {
   const refFileIds = [];
   for (const file of collectUploadableParts(messages)) {
@@ -201,11 +237,16 @@ export async function* runDeepSeek(internalRequest, context = {}) {
   // 强制换新会话（见下面的 compactedForcesFresh），否则上游会话仍持有
   // 未压缩的大历史，压缩白做。
   const contextCharsBefore = estimateContextChars(rawOpenAIMessages);
-  const openAIMessages = compactToolResults(rawOpenAIMessages, {
-    maxChars: CONTEXT_COMPACT_THRESHOLD_CHARS,
-    keepRecent: 2,
+  const compactPlan = createPromptPlan({
+    req,
+    tools: internalToolsToOpenAI(internalRequest.tools),
+    toolChoice: internalToolChoiceToOpenAI(internalRequest.toolChoice),
   });
-  const compacted = openAIMessages !== rawOpenAIMessages;
+  const { openAIMessages, compacted } = compactUntilPromptFits({
+    messages: rawOpenAIMessages,
+    triggerSignal: compactPlan.triggerSignal,
+    toolInstructions: compactPlan.toolInstructions,
+  });
   const contextChars = estimateContextChars(openAIMessages);
   if (compacted) {
     console.log(
@@ -213,11 +254,7 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       + '本次将使用新会话以避免上游继续持有未压缩的历史',
     );
   }
-  const promptPlan = createPromptPlan({
-    req,
-    tools: internalToolsToOpenAI(internalRequest.tools),
-    toolChoice: internalToolChoiceToOpenAI(internalRequest.toolChoice),
-  });
+  const promptPlan = compactPlan;
   const {
     promptInjectionDisabled,
     disabledPrompt,
