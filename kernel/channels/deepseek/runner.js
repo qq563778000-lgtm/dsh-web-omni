@@ -453,7 +453,15 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       const retryResult = await completion({
         modelType,
         prompt: retryFullPrompt,
-        thinkingEnabled,
+        // 重试必须关闭 thinking。
+        //
+        // 真实故障（2026-10-30 DSH 日志）：首轮思考 111 秒后只输出两个换行
+        // 就截断，两次重试同样继承 thinkingEnabled=true（用户选了 max 档），
+        // 每次都重新思考上百秒，再次耗尽输出预算，三次全部 truncated。
+        //
+        // 与 retryReasoningOnly 同理：思考已经做过一遍，重试阶段要的是
+        // "把结论按格式写出来"，再思考一遍只会重复消耗。
+        thinkingEnabled: false,
         searchEnabled: false,
         refFileIds: [],
         preferVision: true,
