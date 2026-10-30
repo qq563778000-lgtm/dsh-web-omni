@@ -410,7 +410,9 @@ export async function* runParsedStreamChannel(internalRequest, context = {}, opt
     // 思考内容在末尾一次性出现。真正的思考来自上游 thinking/research 通道，
     // 已逐字流式；工具调用前的说明文本保持为 message 文本，同样逐字流式。
     if (reasoningContent) yield createReasoningDone({ requestId, responseId, messageId, text: reasoningContent });
-    if (emittedText || visibleContent) {
+    // 只有实质正文才发 text-done：visibleContent 可能是纯空白（模型只写了
+    // 换行），那是真值但不是答案，发出去会在客户端显示一条空白助手消息。
+    if (String(visibleContent || '').trim()) {
       for (const event of ensureMessageStarted()) yield event;
       yield createTextDone({ requestId, responseId, messageId, text: visibleContent });
     }

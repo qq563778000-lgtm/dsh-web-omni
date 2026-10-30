@@ -362,12 +362,50 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       yield createMessageStarted({ requestId, responseId, messageId, role: 'assistant' });
     };
 
+    // 纯空白正文暂存，不立即推给客户端。
+    //
+    // 真实故障（2026-10-30 DSH）：模型计划"并行获取几个项目的 states"，
+    // 但只输出了 "\n\n"，既没有触发信号也没有工具调用。这两个换行被
+    // emitText 立刻流式推送，DSH 把它们当成正文显示出来——用户看到的是
+    // 一段"上游原生输出"的空白，而随后代理层判为空回复、开始续写或报错。
+    //
+    // 空白既不是答案，也不是有效的中间说明，推出去只会污染界面。因此先
+    // 暂存；一旦出现实质内容，再把暂存的空白一起补发（保持文本连续性）；
+    // 整轮都只有空白时，它会随 visibleContent 一起被判为空回复。
+    let pendingWhitespace = '';
+
     const emitText = function* (delta) {
       if (!delta) return;
+      // 还在排队空白时，先判断这段是否也全是空白
+      if (pendingWhitespace !== '' || !String(delta).trim()) {
+        const combined = pendingWhitespace + delta;
+        if (!combined.trim()) {
+          pendingWhitespace = combined;
+          visibleContent += delta;
+          return;
+        }
+        // 出现实质内容：把暂存的空白连同本段一起发出去
+        pendingWhitespace = '';
+        for (const event of ensureMessageStarted()) yield event;
+        visibleContent += combined;
+        emittedText = true;
+        yield createTextDelta({ requestId, responseId, messageId, delta: combined });
+        return;
+      }
       for (const event of ensureMessageStarted()) yield event;
       visibleContent += delta;
       emittedText = true;
       yield createTextDelta({ requestId, responseId, messageId, delta });
+    };
+
+    // 收尾时把仍然暂存的空白丢弃：它们没有伴随任何实质内容，
+    // 推送出去就是用户看到的"空白正文"。
+    const discardPendingWhitespace = () => {
+      if (!pendingWhitespace) return;
+      // visibleContent 里已经累加过，这里只清掉待发缓冲；
+      // 若整轮无实质内容，isEmptyAssistantReply 会据 visibleContent
+      // 的 trim 结果判为空，走续写恢复而不是把空白当答案。
+      pendingWhitespace = '';
     };
 
     for await (const event of parseSSEStream(streamBody, { signal: abortController.signal })) {
@@ -456,6 +494,10 @@ export async function* runDeepSeek(internalRequest, context = {}) {
         detectedToolCalls = finished.toolCalls;
       }
     }
+
+    // 流已结束：仍未发出的纯空白不再推送。
+    // 它若不伴随任何实质内容，推出去就是用户看到的"空白正文"。
+    discardPendingWhitespace();
 
     const releaseSlot = () => {
       if (slot) {
@@ -609,8 +651,29 @@ export async function* runDeepSeek(internalRequest, context = {}) {
             retryToolRequest,
             signal: abortController.signal,
           });
-          if (lateRetry?.toolCalls?.length) detectedToolCalls = lateRetry.toolCalls;
+          if (lateRetry?.toolCalls?.length) {
+            detectedToolCalls = lateRetry.toolCalls;
+          } else {
+            // late 路径失败同样要落盘。
+            //
+            // 2026-10-30：这条分支以前只 catch 异常、不记录失败，导致
+            // 「工具调用格式无法解析（schema_error）」在 DSH 侧有报错、
+            // tool-failures 里却查不到任何原文——排查时无据可依。
+            recordToolFailure({
+              phase: 'late',
+              failureType: lateRetry?.failureType || lateResult.failureType,
+              errorDetails: lateRetry?.errorDetails || lateResult.errorDetails,
+              content: lateRetry?.finalContent ?? rawContent,
+              attempts: lateRetry?.attempts,
+            });
+          }
         } catch (err) {
+          recordToolFailure({
+            phase: 'late',
+            failureType: lateResult.failureType,
+            errorDetails: `late retry threw: ${err.message}`,
+            content: rawContent,
+          });
           console.warn(`[DeepSeek] Late tool recovery failed: ${err.message}`);
         }
       } else if (lateResult?.failureType === 'no_fc' && isMissingToolCallIntent(rawContent, promptPlan.tools)) {
@@ -624,8 +687,24 @@ export async function* runDeepSeek(internalRequest, context = {}) {
             failureType: 'missing_tool_call',
           });
           const missingRetry = promptPlan.parseToolCallsDetailed(retryContent);
-          if (missingRetry?.toolCalls?.length) detectedToolCalls = missingRetry.toolCalls;
+          if (missingRetry?.toolCalls?.length) {
+            detectedToolCalls = missingRetry.toolCalls;
+          } else {
+            // 与 late 路径同理：恢复失败也要留原文，否则事后无从归因。
+            recordToolFailure({
+              phase: 'late',
+              failureType: missingRetry?.failureType || 'missing_tool_call',
+              errorDetails: missingRetry?.errorDetails,
+              content: retryContent || rawContent,
+            });
+          }
         } catch (err) {
+          recordToolFailure({
+            phase: 'late',
+            failureType: 'missing_tool_call',
+            errorDetails: `missing tool-call retry threw: ${err.message}`,
+            content: rawContent,
+          });
           console.warn(`[DeepSeek] Missing tool-call recovery failed: ${err.message}`);
         }
       }
@@ -689,7 +768,13 @@ export async function* runDeepSeek(internalRequest, context = {}) {
     // 思考内容在末尾一次性出现。真正的思考来自上游 thinking 通道，已逐字流式；
     // 工具调用前的说明文本保持为 message 文本，同样逐字流式。
     if (reasoningContent) yield createReasoningDone({ requestId, responseId, messageId, text: reasoningContent });
-    if (emittedText || visibleContent) {
+    // 只有实质正文才发 text-done。
+    //
+    // 旧判据是 `emittedText || visibleContent`，而 visibleContent 可能是
+    // 纯空白（模型只写了 "\n\n"）。那是真值，会走这个分支把空白作为正文
+    // 收尾事件推给客户端——用户看到一条内容为空白的助手消息。
+    // 用 trim 后的长度判断，空白不再算正文。
+    if (String(visibleContent || '').trim()) {
       for (const event of ensureMessageStarted()) yield event;
       yield createTextDone({ requestId, responseId, messageId, text: visibleContent });
     }
