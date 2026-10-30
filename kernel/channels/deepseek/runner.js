@@ -31,6 +31,7 @@ import {
   reportTokenRateLimited,
 } from '../../services/auth.js';
 import { recordUsage } from '../../middleware/metrics.js';
+import { recordToolFailure } from '../../middleware/logger.js';
 import { InternalAPIError } from '../../core/errors.js';
 import {
   createMessageDone,
@@ -528,6 +529,15 @@ export async function* runDeepSeek(internalRequest, context = {}) {
         //
         // 改为明确失败：客户端能据此提示重试，而不是把残片当答案用掉。
         const failureType = retryResult?.failureType || 'syntax_error';
+        // 落盘原文：DSH 侧只留错误消息，不留模型输出。没有这份记录，
+        // 事后只能从推理文本猜失败原因——2026-10-30 连续三轮都是这么跑偏的。
+        recordToolFailure({
+          phase: 'stream',
+          failureType,
+          errorDetails: retryResult?.errorDetails,
+          content: retryResult?.finalContent ?? pendingToolFailureText,
+          attempts: retryResult?.attempts,
+        });
         throw new InternalAPIError(
           `工具调用格式无法解析（${failureType}，已重试 ${retryResult?.attempts ?? 0} 次）`,
           { status: 502, type: 'api_error', code: 'TOOL_FORMAT_FAILED', retryable: true, cause: retryResult },

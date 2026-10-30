@@ -1031,6 +1031,15 @@ function getToolParameters(tool) {
   return tool?.function?.parameters ?? tool?.parameters ?? null;
 }
 
+// 归一化 schema 的 type 字段，兼容字符串与数组两种写法。
+function schemaTypesOf(schema) {
+  if (!schema || typeof schema !== 'object') return [];
+  const type = schema.type;
+  if (Array.isArray(type)) return type.filter(t => typeof t === 'string');
+  if (typeof type === 'string') return [type];
+  return [];
+}
+
 // 模型常见 schema 越界：AskUserQuestion 的 options 超过 maxItems=4、
 // header 超过 maxLength=12 等。这些都是“多写了”而不是“写错了”——
 // 截断到 schema 允许范围后仍可安全执行，避免整条工具调用被丢弃、
@@ -1062,6 +1071,19 @@ function coerceValueToSchema(value, schema, depth = 0) {
   }
 
   if (Array.isArray(value)) {
+    // 数组传给声明为 string 的参数：按逗号拼接。
+    //
+    // 真实场景（2026-10-30 DSH）：pingcode 的 project_ids / state_ids 声明为
+    // {"type":"string","description":"状态 ID，逗号分隔"}，而模型天然倾向传
+    // ["683fee…"]。校验报 "expected type 'string', got 'array'"，整条调用作废。
+    // 拼接不丢信息，且正是该字段文档化的取值形式。
+    //
+    // 只在数组元素都是标量时才拼——嵌套对象拼出来是无意义的 "[object Object]"。
+    const schemaTypes = schemaTypesOf(schema);
+    if (schemaTypes.includes('string') && value.every(item => item === null || typeof item !== 'object')) {
+      return value.map(item => (item === null ? '' : String(item))).join(',');
+    }
+
     let arr = value;
     if (Number.isInteger(schema.maxItems) && arr.length > schema.maxItems) {
       arr = arr.slice(0, schema.maxItems);
@@ -1076,7 +1098,42 @@ function coerceValueToSchema(value, schema, depth = 0) {
     if (Number.isInteger(schema.maxLength) && value.length > schema.maxLength) {
       return value.slice(0, schema.maxLength);
     }
+    // 模型把数字参数写成字符串（"limit": "50"）是高频错误，改写无损。
+    // 只在 schema 明确要求数值、且原值不含任何其它东西时转换：用整串正则
+    // 而不是 Number()，因为 Number('') === 0、Number(' 12 ') === 12，
+    // 会把本该是字符串的空值悄悄变成 0。
+    const types = schemaTypesOf(schema);
+    if (types.includes('number') || types.includes('integer')) {
+      const trimmed = value.trim();
+      if (/^-?\d+$/.test(trimmed)) return Number(trimmed);
+      if (types.includes('number') && /^-?\d*\.\d+$/.test(trimmed)) return Number(trimmed);
+    }
     return value;
+  }
+
+  // 数值越界夹到边界内。
+  //
+  // 真实故障（2026-10-30 DSH）：模型思考「Total is 277」后想一次取全，输出
+  // {"limit":277}，而 pingcode 的 limit 上限是 100。旧实现不修数值，校验
+  // 报 "number larger than maximum=100"，整条调用——包括同批次其它正常参数
+  // 的调用——全部作废，重试两次仍失败，任务终结。
+  //
+  // 夹取是安全的：越界说明模型要"尽量多"，取上界正是它的意图；下限同理。
+  // 这与"猜值"不同——没有猜测成分，边界来自客户端自己的 schema。
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    let num = value;
+    if (typeof schema.minimum === 'number' && num < schema.minimum) num = schema.minimum;
+    if (typeof schema.maximum === 'number' && num > schema.maximum) num = schema.maximum;
+    const integerSchema = schemaTypesOf(schema).includes('integer');
+    if (typeof schema.exclusiveMinimum === 'number' && num <= schema.exclusiveMinimum) {
+      num = integerSchema ? Math.floor(schema.exclusiveMinimum) + 1 : schema.exclusiveMinimum + Number.EPSILON;
+    }
+    if (typeof schema.exclusiveMaximum === 'number' && num >= schema.exclusiveMaximum) {
+      num = integerSchema ? Math.ceil(schema.exclusiveMaximum) - 1 : schema.exclusiveMaximum - Number.EPSILON;
+    }
+    // 夹取边界后仍要求整数时取整（模型给 50.7 而 schema 是 integer）。
+    if (integerSchema && !Number.isInteger(num)) num = Math.round(num);
+    return num;
   }
 
   if (value && typeof value === 'object') {

@@ -110,6 +110,59 @@ function getUpstreamEventPath(date) {
 }
 
 /**
+ * 工具调用解析失败的落盘路径（按天）。
+ *
+ * 为什么必须留原文：DSH 会话日志只记录"DONE error: 工具调用格式无法解析"，
+ * 不记录模型到底输出了什么。2026-10-30 连续三次排查都卡在这里——只能
+ * 从推理文本反推模型想做什么，再猜它为什么解析失败，先后三次改错方向。
+ *
+ * 只写失败摘要与原文尾部（模型出错通常在 XML 结构附近），不写完整上下文，
+ * 避免这份日志变成一份重复的会话存档。
+ */
+function getToolFailurePath(date) {
+  const safeDate = sanitizeDate(date);
+  const dir = join(currentLogDir(), serviceName);
+  mkdirSync(dir, { recursive: true });
+  const p = join(dir, `tool-failures-${safeDate}.jsonl`);
+  assertWithinLogDir(p);
+  return p;
+}
+
+/**
+ * 记录一次工具调用解析失败。
+ *
+ * @param {object} event
+ * @param {string} event.failureType   truncated | syntax_error | schema_error | missing_tool_call
+ * @param {string} [event.errorDetails] 诊断信息（含具体哪个字段校验失败）
+ * @param {string} [event.content]     模型原始输出（截断到尾部若干字符）
+ * @param {number} [event.attempts]    已尝试次数
+ * @param {string} [event.phase]       stream | late
+ */
+export function recordToolFailure(event = {}) {
+  try {
+    const raw = String(event.content || '');
+    // 保留尾部：XML 结构错误几乎总在末尾（未闭合、CDATA 写错、多余文字）。
+    // 头部保留一小段用于确认触发信号是否存在。
+    const MAX = 4000;
+    const entry = {
+      time: new Date().toISOString(),
+      type: 'tool_parse_failure',
+      phase: event.phase || 'stream',
+      failureType: event.failureType || 'unknown',
+      attempts: Number.isFinite(event.attempts) ? event.attempts : null,
+      errorDetails: String(event.errorDetails || '').slice(0, 2000) || null,
+      contentLength: raw.length,
+      contentTail: raw.length > MAX ? raw.slice(-MAX) : raw,
+      contentTruncated: raw.length > MAX,
+    };
+    appendFileSync(getToolFailurePath(), JSON.stringify(entry) + '\n');
+  } catch (e) {
+    // 取证日志写入失败绝不能影响请求处理。
+    console.error('Tool failure log write failed:', e.message);
+  }
+}
+
+/**
  * 把凭据掩码为可识别但不可复原的形式。
  *
  * 真实 token 为 64 字符，取前 12 位足以在池中对上号；但对短输入（测试桩、
