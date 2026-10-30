@@ -32,7 +32,7 @@ window.__ModuleLoader__.load({
     const TEST_PATH = '/api/dsh-web-omni/test';
 
     const text = {
-      title: 'OmniAPI',
+      title: 'dsh-web-omni',
       subtitle: 'DeepSeek Web 转 API · 凭据池',
       available: '可用',
       total: '总数',
@@ -68,7 +68,7 @@ window.__ModuleLoader__.load({
      * 40~200 字符的 base64url 串——这正好是 DeepSeek token 的形态。
      * 命中多于一个时全部打印出来让用户自己挑，绝不瞎选一个塞进去。
      */
-    const TOKEN_COMMAND = `(()=>{const pick=v=>{if(!v)return'';try{const j=JSON.parse(v);return j.value||j.token||j.access_token||''}catch{return v}};const known=['userToken','token','dsc-token','auth_token'];let t='';for(const k of known){t=pick(localStorage.getItem(k));if(t)break}if(!t){const m=document.cookie.match(/(?:^|;\\s*)(?:userToken|token)=([^;]+)/);if(m)t=decodeURIComponent(m[1])}if(!t){const hits=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);const v=localStorage.getItem(k)||'';if(!/token|auth|jwt/i.test(k)&&!/token/i.test(v.slice(0,80)))continue;const c=pick(v);if(typeof c==='string'&&/^[A-Za-z0-9_.+/=-]{40,200}$/.test(c))hits.push([k,c])}if(hits.length===1)t=hits[0][1];else if(hits.length>1){console.log('[OmniAPI] 找到多个候选，请手动复制正确的那个：');hits.forEach(([k,c])=>console.log(k,'=',c));return}}if(!t){console.warn('[OmniAPI] 未自动找到 Token。请在 Network 面板任选一个 api 请求，复制 Authorization 里 Bearer 之后的部分。');return}navigator.clipboard.writeText(t).then(()=>console.log('[OmniAPI] Token 已复制（'+t.length+' 字符），回到 DSH 设置页粘贴即可')).catch(()=>console.log('[OmniAPI] 自动复制失败，请手动复制：\\n'+t))})()`;
+    const TOKEN_COMMAND = `(()=>{const pick=v=>{if(!v)return'';try{const j=JSON.parse(v);return j.value||j.token||j.access_token||''}catch{return v}};const known=['userToken','token','dsc-token','auth_token'];let t='';for(const k of known){t=pick(localStorage.getItem(k));if(t)break}if(!t){const m=document.cookie.match(/(?:^|;\\s*)(?:userToken|token)=([^;]+)/);if(m)t=decodeURIComponent(m[1])}if(!t){const hits=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);const v=localStorage.getItem(k)||'';if(!/token|auth|jwt/i.test(k)&&!/token/i.test(v.slice(0,80)))continue;const c=pick(v);if(typeof c==='string'&&/^[A-Za-z0-9_.+/=-]{40,200}$/.test(c))hits.push([k,c])}if(hits.length===1)t=hits[0][1];else if(hits.length>1){console.log('[dsh-web-omni] 找到多个候选，请手动复制正确的那个：');hits.forEach(([k,c])=>console.log(k,'=',c));return}}if(!t){console.warn('[dsh-web-omni] 未自动找到 Token。请在 Network 面板任选一个 api 请求，复制 Authorization 里 Bearer 之后的部分。');return}navigator.clipboard.writeText(t).then(()=>console.log('[dsh-web-omni] Token 已复制（'+t.length+' 字符），回到 DSH 设置页粘贴即可')).catch(()=>console.log('[dsh-web-omni] 自动复制失败，请手动复制：\\n'+t))})()`;
 
     const CSS = `
 .dwo-root{display:grid;gap:16px;padding:4px 0;font-size:13px;color:var(--dsw-alias-label-primary,#1f1e1d)}

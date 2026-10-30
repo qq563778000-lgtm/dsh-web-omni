@@ -210,3 +210,19 @@ test('toGeneration 在未指定档位时返回空对象，不覆盖上游默认�
   assert.deepEqual(toGeneration(undefined), {});
   assert.deepEqual(toGeneration(null), {});
 });
+
+// ---------------------------------------------------------------------------
+// 路由名与展示名必须与插件名一致（2026-10-30）
+//
+// 此前 providerId 是 'omni'、providerName 是 'OmniAPI'，都是从主项目
+// OmniAPI 继承的历史命名。DSH 的模型选择器与设置页会展示这个标识，结果
+// 插件叫 dsh-web-omni，界面里却显示 "Omni"/"OmniAPI"，用户无法对应。
+// ---------------------------------------------------------------------------
+
+test('默认 providerId 与 providerName 都是插件名', () => {
+  const adapter = new OmniAdapter();
+  assert.equal(adapter.providerId, 'dsh-web-omni', '路由名必须与包名一致');
+  const info = adapter.providerInfo('dsh-web-omni');
+  assert.equal(info.name, 'dsh-web-omni', '展示名不得残留 OmniAPI');
+  assert.doesNotMatch(String(info.name), /OmniAPI/, '不得再出现旧品牌名');
+});

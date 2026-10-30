@@ -35,7 +35,7 @@ dsh plugin --profile <profile> add github:qq563778000-lgtm/dsh-web-omni
 
 1. 粘贴 DeepSeek Web Token，点「添加」
 2. 点「测试全部凭据」确认可用
-3. 在模型选择器里选 `omni` 开始对话
+3. 在模型选择器里选 `deepseek-flash`（来源：dsh-web-omni）开始对话
 
 ### 怎么拿 Token
 
@@ -91,8 +91,8 @@ OpenAI 兼容网关，纯配置就能连上 OmniAPI。本插件的增量在于�
 - id: omni
   config:
     dataDir: C:/Users/<you>/.dsh/plugin-data/dsh-web-omni
-    providerId: omni
-    providerName: OmniAPI
+    providerId: dsh-web-omni
+    providerName: dsh-web-omni
     contextWindow: 1048576
     maxOutputTokens: 65536
     kernelTimeoutMs: 60000
@@ -101,8 +101,8 @@ OpenAI 兼容网关，纯配置就能连上 OmniAPI。本插件的增量在于�
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
 | `dataDir` | `<DSH_HOME>/plugin-data/dsh-web-omni` | 凭据与配置的落盘位置 |
-| `providerId` | `omni` | 路由名 |
-| `providerName` | `OmniAPI` | 选择器展示名 |
+| `providerId` | `dsh-web-omni` | 路由名（模型 id 形如 dsh-web-omni/deepseek-flash） |
+| `providerName` | `dsh-web-omni` | 选择器展示名 |
 | `contextWindow` | `1048576` | 上报给 DSH 的上下文长度 |
 | `maxOutputTokens` | `65536` | 上报给 DSH 的输出上限 |
 | `kernelTimeoutMs` | `60000` | 首次对话等待凭据池就绪的上限 |

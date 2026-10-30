@@ -45,7 +45,7 @@ body{margin:0;padding:24px;background:#fff;font-family:-apple-system,"Segoe UI",
 const BODY = `
 <div class="dwo-root">
   <div class="dwo-head">
-    <h3 class="dwo-title">OmniAPI</h3>
+    <h3 class="dwo-title">dsh-web-omni</h3>
     <p class="dwo-sub">DeepSeek Web 转 API · 凭据池</p>
   </div>
 

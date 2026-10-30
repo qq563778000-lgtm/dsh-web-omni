@@ -66,7 +66,7 @@ test('apply 注册 settings.section', async () => {
   assert.equal(registered[0].meta.name, 'settings.section');
   assert.equal(registered[0].meta.id, 'dsh-web-omni');
   assert.equal(typeof registered[0].meta.label, 'function');
-  assert.equal(registered[0].meta.label(), 'OmniAPI');
+  assert.equal(registered[0].meta.label(), 'dsh-web-omni');
   assert.equal(typeof registered[0].render, 'function');
 });
 
