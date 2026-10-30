@@ -239,6 +239,25 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       ? promptWithToolInstructions(promptMessages.slice(deltaStart), toolInstructions)
       : latestPromptWithToolInstructions(promptMessages, toolInstructions);
 
+  // 续传轮（上游会话已持有前文）的 prompt。
+  //
+  // 与 latestPrompt 的唯一差别：**不附工具说明**。
+  //
+  // 为什么必须区分：播种轮已经把工具说明发过一遍，它作为普通文本存在于
+  // 上游会话历史里。续传轮若再拼一次，同一份 19K 说明会在会话中出现 N 次
+  // ——模型会以"最新贴的这份"为基准，而不是会话里累积的上下文，且每次
+  // 白白多付 19K 字符的输入成本。这正是 affinity 要解决的问题本身。
+  //
+  // 安全性：resolveConversation 只在既有会话命中时返回 promptMode='latest'
+  // （affinity=true）；新建或换凭据轮换出的会话返回 promptMode='full'
+  // （affinity=false），走 fullPrompt 全量播种，工具说明随全量一起发送。
+  // 因此不存在"续传轮里模型从未见过工具说明"的情形。
+  const continuationPrompt = promptInjectionDisabled
+    ? fullPrompt
+    : (deltaStart != null
+      ? promptWithToolInstructions(promptMessages.slice(deltaStart), '')
+      : latestPromptWithToolInstructions(promptMessages, ''));
+
   const thinkingEnabled = internalRequest.generation?.reasoning?.enabled ?? req.body?.thinking_enabled ?? true;
   // DeepSeek Web search may return planning/thinking without a final answer;
   // default it off for API determinism unless the caller explicitly opts in.
@@ -292,7 +311,12 @@ export async function* runDeepSeek(internalRequest, context = {}) {
           };
         }
       : null;
-    const getPrompt = (affinity) => (promptInjectionDisabled || affinity) ? latestPrompt : fullPrompt;
+    // affinity 为 true 表示上游会话已持有前文，只需发送增量且不带工具说明；
+    // 否则全量播种（含工具说明）。
+    const getPrompt = (affinity) => {
+      if (promptInjectionDisabled) return latestPrompt;
+      return affinity ? continuationPrompt : fullPrompt;
+    };
 
     const completionResult = await completion({
       modelType,

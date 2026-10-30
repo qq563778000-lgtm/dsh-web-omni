@@ -21,7 +21,23 @@ const DEFAULT_CONFIG = Object.freeze({
   },
   runtime: {
     sessionTtlSeconds: 1800,
-    enableConversationAffinity: false,
+    // 会话亲和（会话续传）默认开启。
+    //
+    // 为什么改默认值：关闭时每轮都把「提示词 + 系统消息 + 全部历史工具结果」
+    // 重新拼成完整 prompt 发给上游。实测一次 DSH 会话第 9 步上行 276,932
+    // 字符，其中 251,714 是前几轮工具结果的重复发送——而本轮要回答的问题
+    // 只有「我的任务」4 个字。上下文被重复内容挤满，上游直接返回空流，
+    // 任务终结。
+    //
+    // 开启前提已验证（2026-10-30 实测）：同一 chat_session_id +
+    // parent_message_id 链上，上游确实保留前文——播种轮告知暗号 ZQ-7391，
+    // 续传轮只发「暗号是什么」即正确答出；新建会话的对照轮答不出，
+    // 排除模型先验。续传轮上行量从 276,932 降到约 19,410 字符（-93%）。
+    //
+    // 安全性：会话失效（上游报 invalid chat session）时 sse.js 会清掉该
+    // token 的会话缓存并重试一次；换凭据或会话轮换时 resolveConversation
+    // 返回 promptMode='full'，自动退回全量播种，不会丢上下文。
+    enableConversationAffinity: true,
     conversationTtlMs: 1800000,
     maxConversations: 500,
     enableFcErrorRetry: true,
