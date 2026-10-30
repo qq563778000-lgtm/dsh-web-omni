@@ -234,6 +234,19 @@ export function invalidateConversation(conversationId) {
   if (conversationId) store.delete(conversationId);
 }
 
+/**
+ * 取该会话上次使用的凭据前缀。
+ *
+ * 用于让续传轮优先复用同一凭据：上游 chat_session 与创建它的账号绑定，
+ * 换凭据会被 resolveConversation 判为新会话、退回全量重发。
+ *
+ * 返回 null 表示没有绑定（新会话或亲和关闭），调用方按普通调度处理。
+ */
+export function getBoundTokenPrefix(conversationId) {
+  if (!conversationId) return null;
+  return store.get(conversationId)?.tokenPrefix || null;
+}
+
 // Invalidate all conversations bound to a token prefix (used after token refresh).
 export function invalidateByTokenPrefix(tokenPrefix) {
   if (!tokenPrefix) return;

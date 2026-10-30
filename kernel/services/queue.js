@@ -11,7 +11,16 @@ const queue = [];
 const OVERLOAD_LOG_COOLDOWN = 60_000; // 1 min between overload logs to avoid spam
 let lastOverloadLog = 0;
 
-export function enqueueRequest(preferVision, timeoutMs = 30000) {
+/**
+ * @param {boolean} preferVision 是否优先选支持视觉的凭据
+ * @param {number} timeoutMs     排队等待上限
+ * @param {string|null} preferredTokenPrefix 会话亲和：优先复用该前缀的凭据
+ *
+ * preferredTokenPrefix 存在的理由见 auth.acquireToken：多凭据轮转会让同一
+ * 会话每轮换凭据，进而被判定为新会话、退回全量重发。传入会话上次用的
+ * 凭据前缀即可让续传真正生效。
+ */
+export function enqueueRequest(preferVision, timeoutMs = 30000, preferredTokenPrefix = null) {
   return new Promise((resolve, reject) => {
     let entry = null;
     let settled = false;
@@ -46,7 +55,7 @@ export function enqueueRequest(preferVision, timeoutMs = 30000) {
     };
 
     // Try immediate acquire first
-    const slot = acquireToken(preferVision);
+    const slot = acquireToken(preferVision, preferredTokenPrefix);
     if (slot) {
       resolveSlot(slot);
       return;
@@ -68,7 +77,7 @@ export function enqueueRequest(preferVision, timeoutMs = 30000) {
       return;
     }
 
-    entry = { preferVision, resolve: resolveSlot, reject: rejectQueued, createdAt: Date.now() };
+    entry = { preferVision, preferredTokenPrefix, resolve: resolveSlot, reject: rejectQueued, createdAt: Date.now() };
     queue.push(entry);
   });
 }
@@ -77,7 +86,7 @@ export function enqueueRequest(preferVision, timeoutMs = 30000) {
 export function dispatchQueued() {
   while (queue.length > 0) {
     const next = queue[0];
-    const slot = acquireToken(next.preferVision);
+    const slot = acquireToken(next.preferVision, next.preferredTokenPrefix);
     if (!slot) break; // No token available yet
     queue.shift();
     next.resolve(slot);

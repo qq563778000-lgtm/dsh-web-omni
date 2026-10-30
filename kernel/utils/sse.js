@@ -197,7 +197,7 @@ function countAvailableTokens() {
   }
 }
 
-export async function completion({ modelType, prompt, thinkingEnabled = false, searchEnabled = false, parentMessageId = null, refFileIds = [], preferVision = false, resolveSession = null, getPrompt = null, signal = null, initialSlot = null }) {
+export async function completion({ modelType, prompt, thinkingEnabled = false, searchEnabled = false, parentMessageId = null, refFileIds = [], preferVision = false, resolveSession = null, getPrompt = null, signal = null, initialSlot = null, preferredTokenPrefix = null }) {
   throwIfAborted(signal);
 
   // 凭据级故障转移：一个凭据被限流/失效时，换池中其它凭据重试，
@@ -227,7 +227,16 @@ export async function completion({ modelType, prompt, thinkingEnabled = false, s
       initialSlot = null;
     } else {
       try {
-        slot = await enqueueRequest(preferVision);
+        // 偏好凭据只在首次尝试生效。
+        //
+        // 后续的 credentialAttempt 是故障转移轮——上一轮刚因限流/失效失败，
+        // 此时再传偏好会把同一个凭据重新选回来（它可能仍"可用"但已被限流），
+        // 转移也就失去意义。回退到普通调度，由轮转挑一个不同的凭据。
+        slot = await enqueueRequest(
+          preferVision,
+          undefined,
+          credentialAttempt === 0 ? preferredTokenPrefix : null,
+        );
       } catch (err) {
         // 池中已无可分配凭据：若之前有失败记录，把原因一并抛出便于排查。
         if (lastErr) {

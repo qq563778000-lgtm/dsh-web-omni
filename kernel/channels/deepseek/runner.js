@@ -2,7 +2,7 @@ import { getConfig } from '../../services/config-store.js';
 import { completion, parseSSEStream } from '../../utils/sse.js';
 import { resolveUploadableToRefId } from '../../services/upload.js';
 import { enqueueRequest, dispatchQueued } from '../../services/queue.js';
-import { getConversationBinding, getRecentToolCallIndex, getResponseToolCallIndex, invalidateConversation, resolveConversation, recordResponseMessageId } from '../../services/conversation.js';
+import { getConversationBinding, getBoundTokenPrefix, getRecentToolCallIndex, getResponseToolCallIndex, invalidateConversation, resolveConversation, recordResponseMessageId } from '../../services/conversation.js';
 import {
   buildLatestPrompt,
   buildPromptFromMessages,
@@ -408,11 +408,15 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       return chosen;
     };
 
+    // 会话绑定优先复用同一凭据：上游 chat_session 与创建它的账号绑定，
+    // 换凭据会被判为新会话、退回全量重发，亲和失效。
+    const preferredTokenPrefix = compacted ? null : getBoundTokenPrefix(conversationId);
     const completionResult = await completion({
       modelType,
       prompt: fullPrompt,
       thinkingEnabled,
       searchEnabled,
+      preferredTokenPrefix,
       refFileIds,
       preferVision: true,
       resolveSession: makeResolveSession(modelType),

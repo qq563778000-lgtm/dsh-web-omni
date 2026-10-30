@@ -496,7 +496,7 @@ function logPoolReady() {
   console.log(`Pool ready: ${alive}/${tokenPool.length} tokens alive${disabled ? ` (${disabled} disabled)` : ''}`);
 }
 
-export function acquireToken(preferVision = false) {
+export function acquireToken(preferVision = false, preferredTokenPrefix = null) {
   const now = Date.now();
   // 冷却/禁用中的 token 不参与分配。冷却到期自动恢复可用（无需外部清理）。
   const liveCandidates = tokenPool.filter(t =>
@@ -506,6 +506,20 @@ export function acquireToken(preferVision = false) {
     && (t.cooldownUntil || 0) <= now,
   );
   if (liveCandidates.length === 0) return null;
+
+  // 会话亲和：优先复用该会话上次使用的凭据。
+  //
+  // 为什么必须优先：下面的轮转策略是「最近最少使用优先」，多凭据时每次
+  // 请求必然换一个 token。而会话续传要求同一个上游 chat_session 始终由
+  // 同一凭据驱动——换 token 会被 resolveConversation 判为新会话，退回
+  // 全量重发，亲和彻底失效。
+  //
+  // 实测（2026-10-30）：池里 2 个凭据时，一条 5 步对话的上行量
+  // 40K → 91K → 141K → 152K，全部 mode=full，最后上游返回空流。
+  //
+  // 只在指定凭据**当前可用**时才优先；它满载/冷却/禁用时照常回退轮转，
+  // 由会话层承担一次全量重播种的代价——那比死等一个不可用凭据好。
+  // 实现上不作为独立分支：把偏好并进排序，复用同一套 slot 构造与 release。
 
   let candidates = liveCandidates;
   if (preferVision) {
@@ -518,13 +532,28 @@ export function acquireToken(preferVision = false) {
   // If the preferred subset is empty, fall back to liveCandidates (don't block
   // a vision request when only non-vision tokens are free, and vice versa).
 
-  // 先按并发数（负载）排序；并发相同的按 lastUsed 升序轮转（最近最少使用优先）。
+  // 会话亲和的偏好凭据排最前；其余按负载与轮转排序。
+  //
+  // 为什么必须有偏好：下面的轮转是「最近最少使用优先」，多凭据时每次请求
+  // 必然换一个 token。而会话续传要求同一上游 chat_session 始终由同一凭据
+  // 驱动——换 token 会被 resolveConversation 判为新会话，退回全量重发，
+  // 亲和彻底失效。
+  //
+  // 实测（2026-10-30）：池里 2 个凭据时，一条 5 步对话上行量
+  // 40K → 91K → 141K → 152K，全部 mode=full，最后上游返回空流。
+  // 其余按并发数排序；并发相同的按 lastUsed 升序轮转（最近最少使用优先）。
   // 只按 activeRequests 排会在并发未打满时永远选中数组第一个凭据，使多凭据
   // 退化为"只用第一个"——第一个被限流时整个服务受影响。加入 lastUsed 轮转后，
   // 请求会均匀分散到各凭据，既降低单凭据被限流的概率，也让限流影响面更小。
-  candidates.sort((a, b) =>
-    (a.activeRequests - b.activeRequests) || ((a.lastUsed || 0) - (b.lastUsed || 0)),
-  );
+  const isPreferred = (t) => Boolean(preferredTokenPrefix)
+    && typeof t.token === 'string'
+    && t.token.slice(0, 12) === preferredTokenPrefix;
+  candidates.sort((a, b) => {
+    const aPref = isPreferred(a);
+    const bPref = isPreferred(b);
+    if (aPref !== bPref) return aPref ? -1 : 1;
+    return (a.activeRequests - b.activeRequests) || ((a.lastUsed || 0) - (b.lastUsed || 0));
+  });
   const chosen = candidates[0];
   chosen.activeRequests++;
   chosen.lastUsed = Date.now();
