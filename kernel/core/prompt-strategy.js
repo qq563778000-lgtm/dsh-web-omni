@@ -1158,6 +1158,54 @@ function coerceValueToSchema(value, schema, depth = 0) {
   return value;
 }
 
+/**
+ * 参数名同义映射。
+ *
+ * 模型对不同工具的路径参数命名没有稳定记忆：read 要 file_path，它常写成
+ * path。这类错误与"参数值写错"不同——语义完全一致，只是键名不同，改写后
+ * 与原意等价，不存在猜测成分。
+ *
+ * 只映射**语义确实等价**的键，且必须满足：
+ *   - 目标键在该工具 schema 的 properties 里（否则改名没有意义）
+ *   - 源键不在该工具 schema 里（否则它本身合法，不该动）
+ *   - 目标键当前不存在（不覆盖模型已经正确给出的值）
+ */
+const PARAMETER_ALIAS_GROUPS = [
+  // 文件路径：read / edit / read_image 等用 file_path，模型常写 path / filePath
+  ['file_path', ['path', 'filePath', 'filepath', 'filename', 'file']],
+];
+
+function applyParameterAliases(parsedTools = [], tools = []) {
+  const schemaProps = new Map();
+  for (const tool of tools || []) {
+    const fn = tool?.function || tool;
+    const name = fn?.name;
+    if (!name) continue;
+    const props = fn?.parameters?.properties;
+    schemaProps.set(name, props && typeof props === 'object' ? new Set(Object.keys(props)) : null);
+  }
+
+  for (const tool of parsedTools) {
+    const props = schemaProps.get(tool?.name);
+    if (!props) continue;
+    const args = tool.args;
+    if (!args || typeof args !== 'object' || Array.isArray(args)) continue;
+
+    for (const [canonical, aliases] of PARAMETER_ALIAS_GROUPS) {
+      if (!props.has(canonical)) continue;                 // 该工具不认这个键
+      if (args[canonical] !== undefined) continue;         // 模型已经写对了，不覆盖
+      for (const alias of aliases) {
+        if (args[alias] === undefined) continue;
+        if (props.has(alias)) continue;                     // 别名本身合法，保留
+        args[canonical] = args[alias];
+        delete args[alias];
+        break;
+      }
+    }
+  }
+  return parsedTools;
+}
+
 function coerceParsedToolsToSchema(parsedTools = [], tools = []) {
   const byName = new Map(
     (tools || []).map(t => [t?.function?.name || t?.name, getToolParameters(t)])
@@ -1205,6 +1253,20 @@ function parseFunctionCallsBlockAt(text, { blockStart, rawStart, prefix, tools =
 
     parsedTools.push({ name, args });
   }
+
+  // 参数名同义改写：必须在"剥离未知字段"之前做。
+  //
+  // 真实故障（2026-10-30 DSH）：模型给 read 工具传
+  //   {"path":"C:\\...\\xxx.txt","limit":1}
+  // 而 read 的 schema 要求 file_path。path 被当成"多余字段"剥掉，随后校验
+  // 报 missing required property 'file_path'，整条调用作废，重试两次仍失败。
+  //
+  // 这是可无损修复的：'path' 与 'file_path' 对同一个工具是同一个语义。
+  // 但**不能全局改名**——glob / grep 的 path 是可选参数，含义是"搜索目录"，
+  // 与 file_path 不同。因此只在两种条件下改写：
+  //   1. 目标参数（file_path）在该工具 schema 里存在
+  //   2. 当前参数名（path）不在该工具 schema 里（否则它本身是合法的）
+  applyParameterAliases(parsedTools, tools);
 
   // 批调用里个别工具参数冗余（如 Bash 多了 description）不应导致整批失败。
   // 先按工具定义剥离不在参数列表中的字段，再走校验。
@@ -1590,6 +1652,7 @@ function parseTranscriptFunctionCallItems(text, { tools = [], toolChoice = 'auto
 
   if (!sawFunctionCall) return null;
   const prefix = text.slice(0, firstStart).trimEnd();
+  applyParameterAliases(parsedTools, tools);
   const validationError = validateParsedTools(parsedTools, tools, toolChoice);
   if (validationError) {
     return {
@@ -1760,6 +1823,7 @@ function parsePseudoToolCalls(text, { tools = [], toolChoice = 'auto' } = {}) {
   if (!parsedTools.length || !anyKnown) return null;
 
   const prefix = text.slice(0, firstStart).trimEnd();
+  applyParameterAliases(parsedTools, tools);
   const validationError = validateParsedTools(parsedTools, tools, toolChoice);
   if (validationError) {
     return {
