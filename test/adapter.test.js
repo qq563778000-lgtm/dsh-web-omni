@@ -173,17 +173,17 @@ test('stream 必须使用调用方传入的 model，而不是配置里的固定�
 // 数组才抛 INVALID_MODEL_REASONING，所以声明哪些档位由适配器决定。
 // ---------------------------------------------------------------------------
 
-test('resolveModel 声明 3 档思考（与主流客户端一致）', async () => {
+test('resolveModel 声明 5 档思考', async () => {
   const adapter = new OmniAdapter({ providerId: 'omni' });
   const info = await adapter.resolveModel('omni', 'deepseek-flash');
 
   assert.ok(info.reasoning, '应声明 reasoning');
-  // 上游只有 thinking 开/关一个布尔，档位多于实际差异就是虚假的可选性。
-  // 保留 off / medium / high 覆盖"不思考 / 常规 / 深度"三种真实选择。
-  assert.equal(info.reasoning.efforts.length, 3, '应声明 3 档');
+  // 上游只有 thinking 开/关一个布尔。去掉 minimal/low 两个"更轻"的档位：
+  // 上游无法让思考更短，声明它们只会让用户以为能省钱省时，实际毫无区别。
+  assert.equal(info.reasoning.efforts.length, 5, '应声明 5 档');
   assert.deepEqual(
     info.reasoning.efforts.map(e => e.id),
-    ['off', 'medium', 'high'],
+    ['off', 'medium', 'high', 'xhigh', 'max'],
   );
   // 每档都必须有非空 name，否则 DSH 的 normalizeModelInfo 抛 INVALID_MODEL_REASONING
   for (const e of info.reasoning.efforts) {
@@ -198,7 +198,7 @@ test('toGeneration 把非 off 档全部映射为开启思考', async () => {
   const { toGeneration } = await import('../lib/adapter.js');
 
   assert.deepEqual(toGeneration('off'), { reasoning: { enabled: false, effort: 'off' } });
-  for (const level of ['medium', 'high']) {
+  for (const level of ['medium', 'high', 'xhigh', 'max']) {
     const g = toGeneration(level);
     assert.equal(g.reasoning.enabled, true, `${level} 应映射为开启思考`);
     assert.equal(g.reasoning.effort, level, 'effort 应原样透传');
