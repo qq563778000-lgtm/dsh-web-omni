@@ -965,7 +965,17 @@ function parseArgsJson(raw) {
 // 字符串未闭合（截断在引号内）或括号已平衡/过闭合时返回 null，交给其它修复。
 function balanceJsonBraces(text) {
   if (typeof text !== 'string' || !text.trim() || text[0] !== '{') return null;
-  let depth = 0;
+  // 必须同时跟踪 [] 与 {}，并按栈逆序补齐。
+  //
+  // 真实故障（2026-10-30 DSH）：模型输出
+  //   {"questions":[{"id":"a",...},{"id":"b",...,"options":[...]}]   ← 少了 ]}
+  // 旧实现只数 {}，算出"差 1 个 }"，补成 `...}]}` 仍然非法（数组未闭合），
+  // 报「<args_json> must contain a valid JSON object」，两次重试全部失败。
+  //
+  // 改为栈式跟踪：遇到 { 或 [ 入栈，遇到 } 或 ] 出栈并校验配对。
+  // 不配对说明不是"少写了结尾"，而是内容本身有问题，返回 null 交给
+  // 其它修复路径，避免在这里瞎补。
+  const stack = [];
   let inString = false;
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
@@ -975,11 +985,18 @@ function balanceJsonBraces(text) {
       continue;
     }
     if (char === '"') inString = true;
-    else if (char === '{') depth++;
-    else if (char === '}') depth--;
+    else if (char === '{' || char === '[') stack.push(char);
+    else if (char === '}' || char === ']') {
+      const top = stack.pop();
+      if (!top) return null;
+      if (char === '}' && top !== '{') return null;
+      if (char === ']' && top !== '[') return null;
+    }
   }
-  if (inString || depth <= 0) return null;
-  return text + '}'.repeat(depth);
+  if (inString || stack.length === 0) return null;
+  let suffix = '';
+  for (let i = stack.length - 1; i >= 0; i--) suffix += stack[i] === '{' ? '}' : ']';
+  return text + suffix;
 }
 
 function trimExtraClosingBraces(text) {
@@ -1141,8 +1158,25 @@ function coerceValueToSchema(value, schema, depth = 0) {
     const additional = schema.additionalProperties;
     const out = {};
     for (const [key, child] of Object.entries(value)) {
-      if (props && Object.prototype.hasOwnProperty.call(props, key)) {
-        out[key] = coerceValueToSchema(child, props[key] ?? {}, depth + 1);
+      // 命名风格归一（camelCase ↔ snake_case），逐层生效。
+      //
+      // 真实故障（2026-10-30 DSH）：模型给 ask_user_question 传
+      // questions[0].multiSelect，而 schema 声明的是 multi_select。因为
+      // items 允许 additionalProperties:true，**校验不报错**——但客户端
+      // 只读 multi_select，于是多选题静默变成单选。用户收不到任何提示，
+      // 只会发现"怎么只能选一个"。比直接失败更难发现。
+      //
+      // 必须在下面的"剥离未知字段"之前做，否则 multiSelect 会先被删掉。
+      let resolvedKey = key;
+      if (props && !Object.prototype.hasOwnProperty.call(props, key)) {
+        const snake = toSnakeCase(key);
+        if (snake !== key && Object.prototype.hasOwnProperty.call(props, snake)
+          && !Object.prototype.hasOwnProperty.call(value, snake)) {
+          resolvedKey = snake;
+        }
+      }
+      if (props && Object.prototype.hasOwnProperty.call(props, resolvedKey)) {
+        out[resolvedKey] = coerceValueToSchema(child, props[resolvedKey] ?? {}, depth + 1);
       } else if (additional === false) {
         // strip unexpected properties
         continue;
@@ -1177,12 +1211,15 @@ const PARAMETER_ALIAS_GROUPS = [
 
 function applyParameterAliases(parsedTools = [], tools = []) {
   const schemaProps = new Map();
+  const schemaParams = new Map();
   for (const tool of tools || []) {
     const fn = tool?.function || tool;
     const name = fn?.name;
     if (!name) continue;
-    const props = fn?.parameters?.properties;
+    const params = fn?.parameters;
+    const props = params?.properties;
     schemaProps.set(name, props && typeof props === 'object' ? new Set(Object.keys(props)) : null);
+    schemaParams.set(name, params && typeof params === 'object' ? params : null);
   }
 
   for (const tool of parsedTools) {
@@ -1202,8 +1239,75 @@ function applyParameterAliases(parsedTools = [], tools = []) {
         break;
       }
     }
+
+    // 命名风格归一（camelCase ↔ snake_case），在剥离未知字段之前做：
+    // 否则 multiSelect 会先被当成多余字段删掉，客户端静默按缺省处理。
+    normalizeKeyCasing(args, props);
+
+    // 补齐数组项必填的 id（模型高频遗漏，id 只是标识符，可确定生成）
+    fillMissingItemIds(args, schemaParams.get(tool.name));
   }
   return parsedTools;
+}
+
+/** 把 camelCase 转成 snake_case。 */
+function toSnakeCase(key) {
+  return String(key).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+}
+
+/**
+ * 键名命名风格归一：模型给 camelCase、schema 要 snake_case（或反之）。
+ *
+ * 真实故障（2026-10-30 DSH）：模型给 ask_user_question 传 `multiSelect`，
+ * 而 schema 声明的是 `multi_select`。因为该工具的 items 允许
+ * additionalProperties:true，**校验不会报错**——但客户端只读
+ * multi_select，于是多选题静默变成单选。用户不会收到任何提示，
+ * 只会发现"这个选项怎么只能选一个"。比直接失败更难发现。
+ *
+ * 只在两侧都满足时改写（目标键在 schema 里、源键不在），不猜语义。
+ */
+function normalizeKeyCasing(args, props) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return;
+  for (const key of Object.keys(args)) {
+    if (props.has(key)) continue;                     // 本身合法
+    const snake = toSnakeCase(key);
+    if (snake === key) continue;                      // 已是 snake_case，没得换
+    if (!props.has(snake)) continue;                  // schema 里也没有对应键
+    if (args[snake] !== undefined) continue;          // 目标已有值，不覆盖
+    args[snake] = args[key];
+    delete args[key];
+  }
+}
+
+/**
+ * 填补数组项缺失的 id。
+ *
+ * ask_user_question 的每个 question 必填 `id`（用于把用户答案对应回问题）。
+ * 模型经常漏写，导致整条调用 schema_error。id 只是标识符，按位置生成
+ * 不引入任何语义，且结果确定（重试时稳定）。
+ *
+ * 仅处理「数组项的必填字符串属性名为 id」这一种情形，不做泛化——
+ * 其它必填字段缺失可能意味着模型理解有误，应当失败而不是替它编造。
+ */
+function fillMissingItemIds(args, schema) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return;
+  const props = schema?.properties;
+  if (!props || typeof props !== 'object') return;
+
+  for (const [key, propSchema] of Object.entries(props)) {
+    const arr = args[key];
+    if (!Array.isArray(arr)) continue;
+    const items = propSchema?.items;
+    const required = Array.isArray(items?.required) ? items.required : [];
+    if (!required.includes('id')) continue;
+    if (items?.properties?.id?.type !== 'string') continue;
+
+    arr.forEach((item, i) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return;
+      if (typeof item.id === 'string' && item.id) return;
+      item.id = `q${i + 1}`;
+    });
+  }
 }
 
 function coerceParsedToolsToSchema(parsedTools = [], tools = []) {
