@@ -94,7 +94,44 @@ function editFirstRetryNote(tools = []) {
   return `\n\n工具选择提醒：如果这次操作是在修改一个已存在的文件，修正格式后必须继续用 ${editNames.join('/')} 完成同一处精确替换；禁止为了绕开格式错误或精确匹配失败而改用 ${writeNames.join('/')} 整文件重写——那会删除所有未复述进参数的内容。${writeNames.join('/')} 只用于创建新文件，或用户明确要求且你已读过全文的整文件重写。`;
 }
 
+/**
+ * 从诊断信息里提取失败调用涉及的工具。
+ *
+ * schema_error 的 errorDetails 形如：
+ *   Tool call #1 'create_issue': schema validation failed: missing required property 'project_id'
+ * 只带名字不够——模型必须看到参数结构才知道怎么改。
+ */
+function toolsMentionedIn(errorDetails, tools = []) {
+  const text = String(errorDetails || '');
+  return tools.filter((tool) => {
+    const name = String(tool.function?.name || tool.name || '');
+    return name && text.includes(`'${name}'`);
+  });
+}
+
+/**
+ * 渲染若干工具的参数 schema（只给这几个，不是全部）。
+ *
+ * 为什么必须给：重试提示词第 4 条要求「参数必须与工具列表里声明的 schema
+ * 匹配」，但此前的实现只列工具名。对 schema_error 来说，模型看不到字段名
+ * 与类型只能盲猜，两次重试必然再次失败——2026-10-30 DSH 日志正是此形态。
+ */
+function renderToolSchemas(tools = []) {
+  return tools.map((tool) => {
+    const fn = tool.function || tool;
+    let params = '{}';
+    try { params = JSON.stringify(fn.parameters ?? {}); } catch { /* 循环引用等异常降级为空 */ }
+    return `- ${fn.name}: ${params}`;
+  }).join('\n');
+}
+
 export function getToolErrorRetryPrompt(originalResponse, errorDetails, triggerSignal, tools = []) {
+  // schema_error 时附上出错工具的完整参数定义；纯格式错误不需要。
+  const mentioned = toolsMentionedIn(errorDetails, tools);
+  const schemaText = mentioned.length
+    ? `\n\n出错工具的参数定义（必须严格按此传参）：\n${renderToolSchemas(mentioned)}`
+    : '';
+
   const toolListText = tools.length
     ? `\n可用工具列表：\n${tools.map(t => `- ${t.function?.name || t.name}`).join('\n')}`
     : '';
@@ -107,7 +144,7 @@ ${originalResponse}
 \`\`\`
 
 错误详情：
-${errorDetails}${toolListText}
+${errorDetails}${schemaText}${toolListText}
 
 请重试，严格按以下 XML 格式输出工具调用：
 1. 触发信号独占一行，精确为：${triggerSignal}
