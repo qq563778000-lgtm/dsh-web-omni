@@ -45,9 +45,14 @@ const ctx = {
 
 mod.apply(ctx, { dataDir });
 
-record('插件注册 provider', registered.length === 1 && registered[0].providers[0] === 'omni');
-
-const adapter = registered[0].adapter;
+const adapter = registered[0]?.adapter;
+// 不要硬编码路由名：它是可配置的（providerId），写死会在改名后误报失败，
+// 而失败原因看起来像"插件没注册"。
+record(
+  '插件注册 provider',
+  registered.length === 1 && registered[0].providers[0] === adapter?.providerId,
+  adapter?.providerId,
+);
 
 // 1) 模型目录不依赖网络
 const models = await adapter.listModels('omni');
