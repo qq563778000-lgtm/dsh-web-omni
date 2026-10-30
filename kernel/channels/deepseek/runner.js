@@ -14,6 +14,7 @@ import {
   getMissingToolCallRetryPrompt,
   getReasoningOnlyRetryPrompt,
   isEmptyAssistantReply,
+  isLargeFileWriteTruncation,
   isMissingToolCallIntent,
 } from '../../core/tool-retry.js';
 import { preprocessMessagesForToolify } from '../../core/toolify-format.js';
@@ -464,9 +465,22 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       }
     };
     const retryToolRequest = async ({ retryPrompt, currentContent, messages: retryMessages, signal }) => {
+      // 大文件截断时不回放原文。
+      //
+      // 2026-10-30 实测：把 20,570 字的截断原文作为 assistant 消息重发，
+      // 模型看到的上下文变成「我刚写了这么多 → 让我接着写完」，它继续往
+      // 那个写不完的参数里灌内容，再次截断。两次重试全废。
+      //
+      // 分段写入要的是"换一种写法"，前提是先忘掉那个巨型参数。因此这里
+      // 只留一小段尾部作为定位锚点（提示词里本来也带了），整体不回放。
+      const largeFile = isLargeFileWriteTruncation(currentContent, promptPlan.tools);
+      const assistantEcho = largeFile
+        ? { role: 'assistant', content: [{ type: 'text', text: '（上一次输出因内容过长被截断，原文已省略）' }] }
+        : { role: 'assistant', content: [{ type: 'text', text: currentContent || '' }] };
+
       const retryMessagesWithPrompt = [
         ...retryMessages,
-        { role: 'assistant', content: [{ type: 'text', text: currentContent || '' }] },
+        assistantEcho,
         { role: 'user', content: [{ type: 'text', text: retryPrompt }] },
       ];
       // 重试不再重复携带工具说明。
@@ -474,7 +488,11 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       // 首轮已经把完整工具列表（188 工具时约 245K 字符）发给模型，它仍在
       // 同一会话的上下文里；再发一遍既浪费又可能强化"格式很难"的印象。
       // 重试轮只补一段轻量的格式纠错说明。
-      const retryFullPrompt = promptWithToolInstructions(retryMessagesWithPrompt, buildRetryFormatHint(triggerSignal));
+      //
+      // 大文件截断场景不附这段：它写的是"重新输出完整调用"，与分段写入
+      // "只写开头"直接矛盾，模型会按更强的"重新输出"执行。
+      const retryHint = largeFile ? '' : buildRetryFormatHint(triggerSignal);
+      const retryFullPrompt = promptWithToolInstructions(retryMessagesWithPrompt, retryHint);
       const retryResult = await completion({
         modelType,
         prompt: retryFullPrompt,
