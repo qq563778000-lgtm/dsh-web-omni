@@ -2,7 +2,7 @@ import { getConfig } from '../../services/config-store.js';
 import { completion, parseSSEStream } from '../../utils/sse.js';
 import { resolveUploadableToRefId } from '../../services/upload.js';
 import { enqueueRequest, dispatchQueued } from '../../services/queue.js';
-import { getConversationBinding, getRecentToolCallIndex, getResponseToolCallIndex, resolveConversation, recordResponseMessageId } from '../../services/conversation.js';
+import { getConversationBinding, getRecentToolCallIndex, getResponseToolCallIndex, invalidateConversation, resolveConversation, recordResponseMessageId } from '../../services/conversation.js';
 import {
   buildLatestPrompt,
   buildPromptFromMessages,
@@ -17,7 +17,7 @@ import {
   isLargeFileWriteTruncation,
   isMissingToolCallIntent,
 } from '../../core/tool-retry.js';
-import { preprocessMessagesForToolify } from '../../core/toolify-format.js';
+import { preprocessMessagesForToolify, estimateContextChars, compactToolResults } from '../../core/toolify-format.js';
 import { collectParsedStreamContent } from '../common-internal-runner.js';
 import { collectUploadableParts, hasUploadableParts } from '../../utils/message-files.js';
 import { mapModel } from './models.js';
@@ -32,7 +32,7 @@ import {
   reportTokenRateLimited,
 } from '../../services/auth.js';
 import { recordUsage } from '../../middleware/metrics.js';
-import { recordToolFailure } from '../../middleware/logger.js';
+import { recordToolFailure, recordRequestPlan } from '../../middleware/logger.js';
 import { InternalAPIError } from '../../core/errors.js';
 import {
   createMessageDone,
@@ -54,6 +54,15 @@ import {
   internalToolChoiceToOpenAI,
   internalToolsToOpenAI,
 } from '../../core/internal-request.js';
+
+/**
+ * 上下文压缩阈值（字符）。
+ *
+ * 实测依据（2026-10-30 DSH 同一会话）：上行约 187K 字符时成功，
+ * 228K 字符时上游返回完全空流。取 150K 留出余量——工具结果本身有波动，
+ * 贴着边界跑迟早再撞。
+ */
+const CONTEXT_COMPACT_THRESHOLD_CHARS = 150000;
 
 async function extractUploads(messages, token) {
   const refFileIds = [];
@@ -181,7 +190,29 @@ export async function* runDeepSeek(internalRequest, context = {}) {
     );
   }
 
-  const openAIMessages = openAIMessagesFromInternal(internalRequest);
+  const rawOpenAIMessages = openAIMessagesFromInternal(internalRequest);
+  // 长上下文自动压缩历史工具结果。
+  //
+  // 实测上限（2026-10-30 DSH）：同一会话 turn 1 上行约 187K 字符时成功，
+  // turn 2 涨到 228K 后上游返回**完全空流**——超过上限不是报错，是静默
+  // 返回空，最难排查的一种。
+  //
+  // 压缩在绑定会话之前做，让前缀哈希基于压缩后的内容计算；压缩后还要
+  // 强制换新会话（见下面的 compactedForcesFresh），否则上游会话仍持有
+  // 未压缩的大历史，压缩白做。
+  const contextCharsBefore = estimateContextChars(rawOpenAIMessages);
+  const openAIMessages = compactToolResults(rawOpenAIMessages, {
+    maxChars: CONTEXT_COMPACT_THRESHOLD_CHARS,
+    keepRecent: 2,
+  });
+  const compacted = openAIMessages !== rawOpenAIMessages;
+  const contextChars = estimateContextChars(openAIMessages);
+  if (compacted) {
+    console.log(
+      `[DeepSeek] 上下文 ${contextCharsBefore} → ${contextChars} 字符（已压缩旧的工具结果），`
+      + '本次将使用新会话以避免上游继续持有未压缩的历史',
+    );
+  }
   const promptPlan = createPromptPlan({
     req,
     tools: internalToolsToOpenAI(internalRequest.tools),
@@ -228,8 +259,24 @@ export async function* runDeepSeek(internalRequest, context = {}) {
   const explicitConversationId = internalRequest.conversation?.id
     || (getConfig().runtime.enableConversationAffinity ? internalRequest.conversation?.previousResponseId : null);
   const conversationId = explicitConversationId || binding.conversationId;
+
+  // 压缩过历史时必须换新会话。
+  //
+  // 上游会话持有的是**未压缩**的旧历史。若继续续传，压缩只改了本次发送的
+  // 增量内容，上游上下文里那段巨大的旧工具结果依然在——总量仍然超限，
+  // 压缩等于没做。清掉会话绑定后 resolveConversation 会判为 fresh，
+  // 新建会话并要求全量播种（promptMode='full'），压缩后的内容才会真正
+  // 成为上游的新上下文。
+  //
+  // 代价：新会话没有历史，本次必须全量发送。但这正是压缩生效的必要条件；
+  // 不压缩则整轮失败，代价更大。
+  if (compacted && conversationId) {
+    invalidateConversation(conversationId);
+  }
+
   // 显式指定会话 ID 时增量范围未知，退回启发式截取（最后一条 assistant 之后）。
-  const matchedPrefixLength = explicitConversationId ? -1 : binding.matchedPrefixLength;
+  // 压缩场景同理：换了新会话就没有可续传的历史，必须全量。
+  const matchedPrefixLength = (explicitConversationId || compacted) ? -1 : binding.matchedPrefixLength;
 
   // preprocessMessagesForToolify 逐条 1:1 映射，openAIMessages 的前缀匹配
   // 下标可以直接用于 promptMessages。
@@ -259,7 +306,30 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       ? promptWithToolInstructions(promptMessages.slice(deltaStart), '')
       : latestPromptWithToolInstructions(promptMessages, ''));
 
-  const thinkingEnabled = internalRequest.generation?.reasoning?.enabled ?? req.body?.thinking_enabled ?? true;
+  // 长上下文时自动关闭思考。
+  //
+  // 真实故障（2026-10-30 DSH）：会话已累积 228,192 字符（约 91K tokens），
+  // 用户选了 reasoningEffort=max（上游只有开/关布尔，max 与 medium 无异）。
+  // 模型先在这段长上下文里思考、再输出，耗尽输出预算后返回**完全空流**，
+  // 报「上游返回空响应，且续写未取得正文」。
+  //
+  // 阈值取 150,000 字符（约 60K tokens）：超过它，思考本身就要吃掉大量
+  // 预算，而这一步往往只是"基于已有数据写个总结"。数据收集交给思考，
+  // 汇总阶段不需要——关掉后失败率显著下降，且不改变结论质量。
+  // 压缩后仍超阈值说明压缩救不回来（例如工具结果太少、单条就巨大），
+  // 此时放弃思考，把有限的输出预算全留给正文。
+  const contextTooLong = fullPrompt.length > CONTEXT_COMPACT_THRESHOLD_CHARS;
+  const thinkingEnabled = contextTooLong
+    ? false
+    : (internalRequest.generation?.reasoning?.enabled ?? req.body?.thinking_enabled ?? true);
+  if (contextTooLong) {
+    // 只写 console 在 DSH 桌面端读不到，这一条随 request-plans 一起落盘
+    // （见 getPrompt 里的 recordRequestPlan，thinkingEnabled 字段即是结果）。
+    console.log(
+      `[DeepSeek] 上下文 ${fullPrompt.length} 字符超过 ${CONTEXT_COMPACT_THRESHOLD_CHARS}，本轮自动关闭思考`
+      + `（避免长上下文思考耗尽输出预算导致空流）`,
+    );
+  }
   // DeepSeek Web search may return planning/thinking without a final answer;
   // default it off for API determinism unless the caller explicitly opts in.
   const searchEnabled = req.body?.search_enabled ?? false;
@@ -316,7 +386,26 @@ export async function* runDeepSeek(internalRequest, context = {}) {
     // 否则全量播种（含工具说明）。
     const getPrompt = (affinity) => {
       if (promptInjectionDisabled) return latestPrompt;
-      return affinity ? continuationPrompt : fullPrompt;
+      const chosen = affinity ? continuationPrompt : fullPrompt;
+      // 诊断落盘：记录本次实际上行的规模与模式。
+      //
+      // 为什么必须落盘：会话亲和"是否生效"无法从 DSH 会话日志推断（那里只有
+      // 消息累积量，看不出代理发了什么），而插件跑在 DSH 桌面端进程里、
+      // stdout 没有可读落点。2026-10-30 排查"长会话上游返回空流"时，只能
+      // 假设亲和已生效，却拿不到证据——若它其实没生效，会一直查错方向。
+      recordRequestPlan({
+        conversationId,
+        affinity,
+        mode: affinity ? 'continuation' : 'full',
+        promptChars: chosen.length,
+        fullChars: fullPrompt.length,
+        continuationChars: continuationPrompt.length,
+        contextChars: fullPrompt.length,
+        historyMessages: promptMessages.length,
+        thinkingEnabled,
+        reasoningEffort: internalRequest.generation?.reasoning?.effort ?? null,
+      });
+      return chosen;
     };
 
     const completionResult = await completion({

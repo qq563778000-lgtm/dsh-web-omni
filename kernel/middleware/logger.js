@@ -129,6 +129,46 @@ function getToolFailurePath(date) {
 }
 
 /**
+ * 记录一次「本轮实际上行什么」的诊断事件。
+ *
+ * 为什么必须落盘而不是 console.log：插件跑在 DSH 桌面端进程里，stdout
+ * 没有可读的落点。2026-10-30 排查"长会话上游返回空流"时，console 里的
+ * 亲和诊断完全看不到，等于没写。
+ *
+ * 低频（每请求一行）、只记规模与模式，不记任何对话内容。
+ */
+export function recordRequestPlan(event = {}) {
+  try {
+    const entry = {
+      time: new Date().toISOString(),
+      type: 'request_plan',
+      conversationId: event.conversationId ? String(event.conversationId).slice(0, 40) : null,
+      affinity: !!event.affinity,
+      mode: event.mode || 'unknown',
+      promptChars: Number.isFinite(event.promptChars) ? event.promptChars : null,
+      fullChars: Number.isFinite(event.fullChars) ? event.fullChars : null,
+      continuationChars: Number.isFinite(event.continuationChars) ? event.continuationChars : null,
+      contextChars: Number.isFinite(event.contextChars) ? event.contextChars : null,
+      historyMessages: Number.isFinite(event.historyMessages) ? event.historyMessages : null,
+      thinkingEnabled: event.thinkingEnabled === undefined ? null : !!event.thinkingEnabled,
+      reasoningEffort: event.reasoningEffort || null,
+    };
+    appendFileSync(getRequestPlanPath(), JSON.stringify(entry) + '\n');
+  } catch (e) {
+    console.error('Request plan log write failed:', e.message);
+  }
+}
+
+function getRequestPlanPath(date) {
+  const safeDate = sanitizeDate(date);
+  const dir = join(currentLogDir(), serviceName);
+  mkdirSync(dir, { recursive: true });
+  const p = join(dir, `request-plans-${safeDate}.jsonl`);
+  assertWithinLogDir(p);
+  return p;
+}
+
+/**
  * 记录一次工具调用解析失败。
  *
  * @param {object} event

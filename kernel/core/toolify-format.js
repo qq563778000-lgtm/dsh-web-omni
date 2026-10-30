@@ -159,3 +159,86 @@ export function preprocessMessagesForToolify(messages = [], triggerSignal, seedT
 
   return processed;
 }
+
+// ---------------------------------------------------------------------------
+// 历史压缩：控制上行上下文规模
+//
+// 真实故障（2026-10-30 DSH）：同一会话 turn 1 的上行约 187K 字符时成功，
+// turn 2 涨到 228K 字符后上游返回**完全空流**。上游的上下文上限就在这两个
+// 值之间（约 80K tokens），超过后不是报错，而是静默返回空——最难排查的一种。
+//
+// 工具结果是唯一的膨胀源：一次 get_my_tasks 就能带来 5 万字符，多轮累积后
+// 历史里 80% 是已经被消费掉的旧结果。它们对后续推理的价值远低于最近一轮。
+//
+// 压缩策略（保守）：
+//   - 只动 role==='tool' 的消息内容，不碰 user / assistant / system
+//   - 最近 K 条工具结果原样保留——模型当前正在用它们
+//   - 更早的替换为「占位说明」，保留工具名与原始长度，便于模型判断是否要
+//     重新调用工具（比无声丢弃安全：模型知道这里曾有数据）
+//   - 幂等：已压缩过的内容再次压缩结果不变，避免每轮改写导致前缀哈希漂移
+// ---------------------------------------------------------------------------
+
+/** 压缩占位的统一前缀，用于幂等判断。 */
+const COMPACT_MARKER = '[历史工具结果已压缩]';
+
+/**
+ * 估算一组消息的上下文字符数。
+ *
+ * 与代理实际上行规模口径一致：把每条消息的内容序列化后求长度。
+ * 不做精确 token 估算——上限是经验值，量级对得上就够了。
+ */
+export function estimateContextChars(messages = []) {
+  let total = 0;
+  for (const m of messages || []) {
+    const c = m?.content;
+    if (typeof c === 'string') total += c.length;
+    else if (c != null) {
+      try { total += JSON.stringify(c).length; } catch { /* 循环引用等异常忽略 */ }
+    }
+    if (Array.isArray(m?.tool_calls)) {
+      try { total += JSON.stringify(m.tool_calls).length; } catch { /* 同上 */ }
+    }
+  }
+  return total;
+}
+
+/**
+ * 压缩超长历史中的旧工具结果，使总量回到 maxChars 以内。
+ *
+ * 返回新的消息数组（不修改入参），调用方可直接用于构建 prompt。
+ * 若总量本来就没超限，原样返回入参。
+ */
+export function compactToolResults(messages = [], { maxChars = 150000, keepRecent = 2 } = {}) {
+  if (!Array.isArray(messages) || !messages.length) return messages;
+  if (estimateContextChars(messages) <= maxChars) return messages;
+
+  // 收集所有工具结果消息的下标，从后往前保留 keepRecent 条。
+  const toolIdx = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]?.role === 'tool') toolIdx.push(i);
+  }
+  if (toolIdx.length <= keepRecent) {
+    // 工具结果太少，压缩它们也救不回规模；交给调用方决定（例如重开会话）。
+    return messages;
+  }
+
+  const out = messages.slice();
+  const protecedFrom = toolIdx.length - keepRecent;
+  let total = estimateContextChars(messages);
+
+  // 从最旧的开始压缩，直到回到阈值以内。
+  for (let n = 0; n < protecedFrom && total > maxChars; n++) {
+    const idx = toolIdx[n];
+    const msg = out[idx];
+    const raw = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content ?? '');
+    // 已经压缩过：跳过（幂等，避免重复改写导致前缀哈希漂移）
+    if (raw.startsWith(COMPACT_MARKER)) continue;
+
+    const placeholder = `${COMPACT_MARKER}（原始 ${raw.length} 字符已省略，本轮对话早期获取。`
+      + `如果后续推理确实需要这些数据，请重新调用对应工具获取最新结果。）`;
+    total -= raw.length - placeholder.length;
+    out[idx] = { ...msg, content: placeholder };
+  }
+
+  return out;
+}
