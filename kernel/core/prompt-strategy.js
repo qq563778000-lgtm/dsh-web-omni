@@ -1476,6 +1476,141 @@ function buildApplyPatchArgs(tool, patch) {
   return { patch };
 }
 
+/**
+ * DeepSeek 原生工具调用标记（DSML）的解析。
+ *
+ * 真实故障（2026-10-30 DSH）：模型直接输出了上游自己的工具调用语法
+ *
+ *   <｜｜DSML｜｜ calls>
+ *   <｜｜DSML｜｜ invoke name="pwsh">
+ *   <｜｜DSML｜｜ parameter name="command" string="true">...</｜｜DSML｜｜ parameter>
+ *   </｜｜DSML｜｜ invoke>
+ *   </｜｜DSML｜｜ calls>
+ *
+ * 这套标记用全角竖线 U+FF5C 包裹，与本项目的 <function_calls> 协议不同。
+ * 不解析就有两个后果：整段标记作为正文泄漏给用户（用户实际看到的就是这堆
+ * 尖括号），且工具调用丢失、任务卡死。
+ *
+ * 这是明确的工具调用意图、结构完整，应当转成真实 tool_call，而不是触发
+ * 纠错重试——重试只会让模型再写一遍同样的格式。
+ *
+ * 竖线的数量与写法在不同版本间可能有差异（`｜｜` / `|` / 混用），
+ * 因此匹配时放宽为 1~2 个半角或全角竖线。
+ */
+const DSML_BAR = '[\\uFF5C|]';
+
+function dsmlTagPattern(name, { closing = false } = {}) {
+  return new RegExp(
+    `<${closing ? '\\/' : ''}${DSML_BAR}{1,2}\\s*DSML\\s*${DSML_BAR}{1,2}\\s*${name}\\b([^>]*)>`,
+    'gi',
+  );
+}
+
+/** 流式检测用：判断 index 处是否是一个完整的 DSML calls 开标签。 */
+const DSML_CALLS_OPEN_RX = /^<[｜|]{1,2}\s*DSML\s*[｜|]{1,2}\s*calls\s*>/i;
+
+export function dsmlCallsOpenAt(text, index) {
+  if (text[index] !== '<') return false;
+  // 只截取有限长度做匹配：开标签很短，没必要对整段剩余文本跑正则
+  return DSML_CALLS_OPEN_RX.test(text.slice(index, index + 40));
+}
+
+function dsmlAttr(attrs, key) {
+  if (!attrs) return '';
+  const m = attrs.match(new RegExp(`${key}\\s*=\\s*"([^"]*)"|${key}\\s*=\\s*'([^']*)'|${key}\\s*=\\s*([^\\s>]+)`, 'i'));
+  return (m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim();
+}
+
+/** 解析 invoke 内部的 parameter 列表为参数对象。 */
+function parseDsmlParameters(body) {
+  const args = {};
+  const openRx = dsmlTagPattern('parameter');
+  const closeRx = dsmlTagPattern('parameter', { closing: true });
+  let m;
+  while ((m = openRx.exec(body)) !== null) {
+    const name = dsmlAttr(m[1], 'name');
+    const isString = /string\s*=\s*"true"/i.test(m[1] || '');
+    const valueStart = m.index + m[0].length;
+    closeRx.lastIndex = valueStart;
+    const cm = closeRx.exec(body);
+    const valueEnd = cm ? cm.index : body.length;
+    const raw = body.slice(valueStart, valueEnd);
+    if (name) {
+      if (isString) {
+        args[name] = raw;
+      } else {
+        // 没标 string 的多半是数字/布尔/对象，按 JSON 解析；失败则保留原文
+        const trimmed = raw.trim();
+        try { args[name] = JSON.parse(trimmed); } catch { args[name] = trimmed; }
+      }
+    }
+    openRx.lastIndex = cm ? cm.index + cm[0].length : body.length;
+  }
+  return args;
+}
+
+function parseDsmlToolCalls(text, { tools = [], toolChoice = 'auto' } = {}) {
+  const src = String(text || '');
+  const openRx = dsmlTagPattern('calls');
+  const open = openRx.exec(src);
+  if (!open) return null;
+
+  const afterOpen = src.slice(open.index + open[0].length);
+  const closeRx = dsmlTagPattern('calls', { closing: true });
+  const close = closeRx.exec(afterOpen);
+
+  const prefix = src.slice(0, open.index).trimEnd();
+  if (!close) {
+    // 还没收到闭合标签：这是"仍在续传"，不是格式错误。
+    //
+    // 必须与真正损坏区分开：流式阶段每来一块都会调一次解析，若这里返回
+    // syntax_error，检测器会立刻判定失败并把已缓冲的原文当正文吐出去
+    // ——用户看到的就是那堆尖括号。返回 truncated 才能让检测器继续缓冲。
+    return { toolCalls: null, content: prefix || null, failureType: 'truncated', errorDetails: 'DSML calls block not closed yet', triggerIndex: open.index };
+  }
+  const inner = afterOpen.slice(0, close.index);
+
+  const invokeRx = dsmlTagPattern('invoke');
+  const invokeCloseRx = dsmlTagPattern('invoke', { closing: true });
+  const parsedTools = [];
+  let im;
+  while ((im = invokeRx.exec(inner)) !== null) {
+    const name = dsmlAttr(im[1], 'name');
+    const bodyStart = im.index + im[0].length;
+    invokeCloseRx.lastIndex = bodyStart;
+    const ic = invokeCloseRx.exec(inner);
+    const bodyEnd = ic ? ic.index : inner.length;
+    if (name) {
+      parsedTools.push({
+        name: resolveToolName(name, tools),
+        args: parseDsmlParameters(inner.slice(bodyStart, bodyEnd)),
+      });
+    }
+    invokeRx.lastIndex = ic ? ic.index + ic[0].length : inner.length;
+  }
+  if (!parsedTools.length) return null;
+
+  applyParameterAliases(parsedTools, tools);
+  coerceParsedToolsToSchema(parsedTools, tools);
+
+  const validationError = validateParsedTools(parsedTools, tools, toolChoice);
+  if (validationError) {
+    return { toolCalls: null, content: prefix || null, failureType: 'schema_error', errorDetails: validationError, parsedTools, triggerIndex: open.index };
+  }
+  return {
+    toolCalls: parsedTools.map((tool) => ({
+      id: createInternalId('call'),
+      type: 'function',
+      function: { name: tool.name, arguments: JSON.stringify(tool.args || {}) },
+    })),
+    content: prefix || null,
+    rawToolText: src.slice(open.index),
+    triggerIndex: open.index,
+    failureType: null,
+    errorDetails: null,
+  };
+}
+
 function parseApplyPatchXml(text, { tools = [], toolChoice = 'auto' } = {}) {
   const start = findApplyPatchStart(text);
   if (start < 0) return null;
@@ -1628,7 +1763,11 @@ export function parseXmlToolCallsDetailed(rawText, { triggerSignal, tools = [], 
     // 此时仍按协议解析该块，避免整段工具调用 XML 被当作普通文本透传给客户端。
     const bareStart = findBareFunctionCallsStart(text);
     if (bareStart < 0) {
-      // 兜底 2：模型用 <ApplyPatch> 专用伪 XML 直接输出补丁。
+      // 兜底 2：模型直接输出上游原生的 DSML 工具调用标记。
+      // 优先级最高：这是官方格式、结构完整，转成 tool_call 即可执行。
+      const dsml = parseDsmlToolCalls(text, { tools, toolChoice });
+      if (dsml) return dsml;
+      // 兜底 3：模型用 <ApplyPatch> 专用伪 XML 直接输出补丁。
       // 有对应工具则转成 tool_call；没有则触发纠错重试，不把 patch 当正文泄漏。
       const applyPatch = parseApplyPatchXml(text, { tools, toolChoice });
       if (applyPatch) return applyPatch;
@@ -1987,6 +2126,27 @@ function isPartialPatternAtEnd(buffer, index, patterns) {
   if (/^<function_calls\b[^>]*$/i.test(rest)) return true;
   if ('<applypatch'.startsWith(lower)) return true;
   if (/^<applypatch\b[^>]*$/i.test(rest)) return true;
+  if (isPartialDsmlAtEnd(rest)) return true;
+  return false;
+}
+
+/**
+ * 判断缓冲区尾部是不是"还没收全的 DSML 开标签"。
+ *
+ * 流式分片会把 <｜｜DSML｜｜ calls> 切成多块，如果第一块只到 `<｜｜DSM`
+ * 就判定为普通文本推给客户端，那半截标记就泄漏出去了——而剩下的半截
+ * 已经不可能再被拦回。返回 true 表示"再等等，下一块到了再说"。
+ *
+ * 判据：以 `<` 开头、尚未形成完整开标签、且已收到的部分仍是它的前缀。
+ */
+function isPartialDsmlAtEnd(rest) {
+  if (!rest.startsWith('<')) return false;
+  // 完整开标签已由 dsmlCallsOpenAt 处理，这里只管"不完整"
+  if (rest.length > 40) return false;
+  const DSML_CALLS_OPEN = '<｜｜DSML｜｜ calls>';
+  if (DSML_CALLS_OPEN.startsWith(rest)) return true;
+  // 全角/半角与竖线数量都可能不同，放宽：只要前缀里出现了 DSML 且还没到 '>'
+  if (/^<[｜|]{1,2}\s*DSML/i.test(rest) && !rest.includes('>')) return true;
   return false;
 }
 
@@ -2091,6 +2251,18 @@ export function createXmlToolCallDetector({ triggerSignal, parseToolCalls, parse
         // 兜底：模型漏掉触发信号、直接输出裸 <function_calls> 块时也进入工具缓冲，
         // 否则整段工具调用 XML 会以文本增量透传给客户端。
         if (thinkDepth === 0 && tagOpenAt(scanBuffer, i, 'function_calls')) {
+          state = 'tool_parsing';
+          toolBuffer = scanBuffer.slice(i);
+          scanBuffer = '';
+          return parseBufferedToolText({ delta });
+        }
+
+        // 上游原生的 DSML 工具调用标记（<｜｜DSML｜｜ calls>）。
+        //
+        // 必须在流式阶段就拦住：2026-10-30 用户实际看到的就是这一整段
+        // 尖括号标记被当成正文输出。事后再解析已经晚了——文字已经流给
+        // 客户端，无法撤回。
+        if (thinkDepth === 0 && dsmlCallsOpenAt(scanBuffer, i)) {
           state = 'tool_parsing';
           toolBuffer = scanBuffer.slice(i);
           scanBuffer = '';
