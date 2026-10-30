@@ -395,7 +395,21 @@ async function completionWithToken(slot, { modelType, prompt, thinkingEnabled, s
         const first = await reader.read();
         if (first.done) {
           reader.releaseLock();
-          throw new Error('Completion stream ended before any data');
+          // 空流必须可故障转移。
+          //
+          // 真实故障（2026-10-30 DSH 日志）：长对话第 5 步上游返回空流，
+          // 凭据池里还有可用凭据，但该错误被判为"换凭据也没用"，
+          // 于是只做一次续写就抛 EMPTY_RESPONSE，整个任务终结。
+          //
+          // 而 runner 侧的注释明确写着空流的第一种成因是"该凭据被静默限制"
+          // ——这正是换凭据能解决的。实测同一账号池中常有部分凭据被静默限流、
+          // 其它正常，因此必须进入故障转移。
+          //
+          // 若真是 IP 级限流，换凭据也无用，但那种情况由 noteEmptyReply 的
+          // 连续计数在 runner 侧判定并全局冷却，不依赖此处的放弃。
+          const emptyErr = new Error('Completion stream ended before any data');
+          emptyErr.credentialFailover = true;
+          throw emptyErr;
         }
 
         const firstText = new TextDecoder().decode(first.value, { stream: true }).trim();
