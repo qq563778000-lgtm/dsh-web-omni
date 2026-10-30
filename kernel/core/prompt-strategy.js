@@ -217,40 +217,67 @@ function renderToolListCompact(tools) {
  * 而模型在单轮里只会用到极少数。改为"先看分组找到候选，再按需确认参数"，
  * 把识别成本从"通读全部"降为"按类定位"。
  */
+/**
+ * 分组渲染：按前缀归类，但保留每个工具的参数名。
+ *
+ * 演进原因（2026-10-30 DSH 故障）：初版 grouped 档只列工具名、且每组截断
+ * 前 12 个。实测 188 工具时，mcp 组 144 个工具压成一行「前 12 个…另有 132 个」，
+ * mcp__pingcode__get_my_tasks 根本不在提示词里。
+ *
+ * 后果：模型知道该用这个工具（能调用成功），但看不到它接受 offset/limit，
+ * 于是每次都传 {}，只能拿第 1 页 5 万字符，反复调用把上下文撑爆。
+ *
+ * 结论：工具名本身不足以支撑调用，必须带上参数名——这是「能用」的最低
+ * 信息量，不能作为压缩对象。可压缩的是描述文字、类型、约束、嵌套结构。
+ */
 function renderToolListGrouped(tools) {
   const groups = new Map();
   for (const tool of tools) {
     const fn = tool.function || tool;
     const name = String(fn.name || '');
     if (!name) continue;
-    // 前缀聚类：取第一个分隔符之前的部分；无分隔符归入「其他」。
+    // 前缀聚类：mcp__xxx__ 取前两段；其余取第一个下划线前；无下划线归「其他」。
     const key = /^[a-z0-9]+_[a-z0-9]+_/i.test(name)
       ? name.split('_').slice(0, 2).join('_')
       : (name.includes('_') ? name.split('_')[0] : '其他');
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(fn.name);
+    groups.get(key).push(fn);
   }
 
-  // 大组只列前若干个，其余用数量提示，避免列表本身又变成噪音。
-  const MAX_NAMES_PER_GROUP = 12;
+  // 每行格式：name(必填1,必填2|可选3,可选4)
+  // 参数名已是调用的必要信息；类型与约束留给客户端 schema 校验兜底。
+  const describeTool = (fn) => {
+    const parameters = fn.parameters ?? {};
+    const props = parameters.properties && typeof parameters.properties === 'object'
+      ? Object.keys(parameters.properties)
+      : [];
+    const required = Array.isArray(parameters.required)
+      ? parameters.required.filter(k => typeof k === 'string')
+      : [];
+
+    if (props.length === 0) return fn.name;
+    const req = required.filter(k => props.includes(k));
+    const opt = props.filter(k => !req.includes(k));
+    const parts = [];
+    if (req.length) parts.push(req.map(k => `${k}*`).join(','));
+    if (opt.length) parts.push(opt.join(','));
+    return `${fn.name}(${parts.join('|')})`;
+  };
+
   const lines = [...groups.entries()]
     .sort((a, b) => b[1].length - a[1].length)
-    .map(([key, names]) => {
-      const shown = names.slice(0, MAX_NAMES_PER_GROUP).join(', ');
-      const rest = names.length > MAX_NAMES_PER_GROUP
-        ? ` …（另有 ${names.length - MAX_NAMES_PER_GROUP} 个同组工具）`
-        : '';
-      return `- ${key}（${names.length}）: ${shown}${rest}`;
-    });
+    .map(([key, fns]) => `- ${key}（${fns.length}）: ${fns.map(describeTool).join('  ')}`);
 
-  return `共 ${tools.length} 个工具，按名称分组如下：
+  return `共 ${tools.length} 个工具。
+
+参数说明：括号内是参数名，带 * 为必填，\`|\` 后为可选。
+类型与取值范围以客户端定义为准确认；分页类工具留意 offset / limit / page / cursor。
 
 ${lines.join('\n')}
 
 调用方式：
-1. 先在上述分组里找到与任务相关的工具名
-2. 该工具的确切参数以客户端定义为准；不确定时先用最少的必填参数试调一次，
-   或向用户确认，不要臆造参数名`;
+- 按参数名传参，不要臆造未列出的字段
+- 结果被截断或提示还有更多时，用分页参数继续取，不要用相同参数重复调用`;
 }
 
 /**
@@ -393,9 +420,10 @@ ${renderToolListByPresentation(normalized, toolPresentation)}
 ## 何时调用工具
 
 - 能直接回答 → 只输出自然语言，不要出现任何 XML
-- **元问题直接回答，不要调用工具**：当用户问的是「有哪些工具 / 你能做什么 / 支持什么模型 / 当前环境 / 工作目录 / 配置是什么」
-  这类关于能力与环境的问题时，答案就在上下文里（工具列表、环境信息已经给出），直接用自然语言作答。
-  这类问题调用工具只会拿到你已经知道的信息，还会迫使客户端把已回答的内容再重复一轮
+- **只回答"关于这个助手自身"的问题时不要调工具**：问的是助手能做什么、支持哪些模型、
+  用什么工具、当前工作目录、自身配置是什么——这些答案已在上下文里，直接答。
+  注意边界：用户说的「我的任务」「我的项目」「我的待办」问的是**他的业务数据**，不是助手自身，
+  必须调工具去查；不要因为句子里有「任务」「当前」就当成元问题
 - 需要工具 → **同一次回复**里给出：一句简短说明（可省略）+ 触发信号（独占一行）+ 紧跟的 \`<function_calls>\` 块
 - **说了就要当场做**：只要你写了「要去做某件事」的描述，同一轮就必须有对应的 \`<function_calls>\`。
   判断标准不是用了哪个动词，而是：这句话是不是在宣告/预告/打算一个接下来要执行的动作？
