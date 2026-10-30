@@ -269,8 +269,130 @@ ${toolListText}
 不要再输出计划、说明或道歉；现在只输出要执行的工具调用。`;
 }
 
+/**
+ * 判定这次截断是不是「往工具参数里塞大段文件内容」造成的。
+ *
+ * 为什么单独识别：这类截断的重试策略与普通格式错误完全不同。
+ *
+ * 真实故障（2026-10-30 DSH 日志）：用户要一个完整 HTML 插画，模型把整个
+ * 20,866 字符的 SVG 写进 write 工具的 content 参数，写到
+ * `opacity="0` 被硬截断——触发信号和 <tool> 都在更靠前的位置，是完整的
+ * 工具调用，只是参数写不完。
+ *
+ * 这种场景下「从截断点精确续写」的要求无法完成：模型必须精确接上
+ * `opacity="0` 这种位置继续写几千行 SVG，实测续写返回的是一段无关文本
+ * （日志里尾部出现游离的 "INCOMPLETE"），两次重试全部失败。
+ *
+ * 判据（三条同时满足）：
+ *   1. 存在路径类工具集（write 或 edit），否则不是文件写入场景
+ *   2. 截断内容足够长——短输出被截断通常是格式问题，不是体量问题
+ *   3. 截断点位于 JSON 字符串内部——即正在写某个参数的值，而不是标签之间
+ *
+ * 第 3 条用「最后一个未闭合的引号」判断：截断内容里转义引号数为奇数，
+ * 说明停在一个字符串参数内部。
+ */
+export function isLargeFileWriteTruncation(truncatedContent, tools = []) {
+  const text = String(truncatedContent || '');
+  if (!text) return false;
+
+  const { editNames, writeNames } = detectFileMutationTools(tools);
+  if (!editNames.length && !writeNames.length) return false;
+
+  // 阈值取 8000 字符：普通工具调用参数极少到这个量级，而模型写整页
+  // HTML/SVG 时会轻松越过。低于此值的截断更可能是结构问题。
+  if (text.length < 8000) return false;
+
+  // 数转义引号（\"）与裸引号，判断是否停在字符串中间。
+  // 只数最外层的 "：在 JSON 里它们成对出现，奇数说明未闭合。
+  let quotes = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\\') { i++; continue; }
+    if (text[i] === '"') quotes++;
+  }
+  return quotes % 2 === 1;
+}
+
 export function getToolContinuationPrompt(truncatedContent, errorDetails, tools = []) {
   const tail = String(truncatedContent || '').slice(-1500);
+
+  // 大文件写入场景走完全不同的策略：不是"精确续写"，而是"分段写"。
+  //
+  // 原因见 isLargeFileWriteTruncation 的注释：要求模型从 `opacity="0`
+  // 这种位置精确续写整页 SVG，实测两次重试全部失败，续写回来的是一段
+  // 与上下文无关的文本。真正可行的是让它改变写入方式本身。
+  if (isLargeFileWriteTruncation(truncatedContent, tools)) {
+    const { editNames, writeNames } = detectFileMutationTools(tools);
+    // 不替模型挑"第一个"写入工具。
+    //
+    // 2026-10-30 实测：188 工具集下 writeNames[0] 是
+    // mcp__gitlab-mcp__create_or_update_file（gitlab 的远程建文件），
+    // 模型照抄后去创建**远端仓库文件**，而不是写本地工作区。真正的 write
+    // 排在数组第二位。
+    //
+    // 正确做法是把候选按"本地文件优先"排序后全部列出，由模型按语义选：
+    // 它知道用户说的是本地文件，不该由我们猜。
+    const localFirst = (names) => [...names].sort((a, b) => {
+      const isMcp = n => /^mcp__/i.test(n) || /^[a-z0-9]+_mcp_/i.test(n);
+      if (isMcp(a) && !isMcp(b)) return 1;
+      if (!isMcp(a) && isMcp(b)) return -1;
+      return a.length - b.length;  // 短名通常是原生工具（write/edit），长名多为 MCP
+    });
+    const writeCandidates = localFirst(writeNames);
+    const editCandidates = localFirst(editNames);
+    const writeTool = writeCandidates[0] || 'write';
+    const editTool = editCandidates[0] || 'edit';
+    const writeList = writeCandidates.length ? writeCandidates.join(' / ') : writeTool;
+    const editList = editCandidates.length ? editCandidates.join(' / ') : editTool;
+    // 触发信号从调用方传入的协议里取。这里没有 triggerSignal 参数，
+    // 从截断内容开头提取——重试提示若不重申信号与标签名，模型会退回
+    // 它自己熟悉的 <invoke>/<parameter> 格式（2026-10-30 实测：整段返回
+    // Anthropic 风格 invoke 块，解析器完全不认，等于白重试一次）。
+    const signal = (String(truncatedContent || '').match(/^\s*(<[A-Za-z_][\w]*_Start\/>)/) || [])[1] || '';
+    const signalLine = signal
+      ? `1. 触发信号独占一行，精确为：${signal}`
+      : '1. 触发信号独占一行';
+    return `你上一次的工具调用因为**参数内容太长**被截断了——不是格式问题，是把整份文件内容塞进一次调用装不下。
+
+被截断的位置（尾部）：
+\`\`\`
+${tail}
+\`\`\`
+
+不要试图从这里精确续写——你无法可靠地接上被切断的字符，上一次重试就是这样失败的。
+
+改用**分段写入**，分多次调用完成同一个文件：
+
+第 1 步：只写文件的开头部分（例如前 200 行），内容必须在这一步就完整闭合、可正常打开。
+第 2 步起：在该文件里定位一个**唯一且已存在的锚点**（如上一段结尾的标签），把新一段内容替换进去，保持文件始终完整。
+重复第 2 步，直到整个文件写完。
+
+写文件可用的工具（从下列中选择**本地工作区**的那个，不要选 gitlab 等远程仓库类工具）：
+- 创建文件：${writeList}
+- 追改文件：${editList}
+
+关键要求：
+- **每一次调用的参数必须控制在 4000 字符以内**。上限就是上一次失败的原因，宁可分 10 次也不要写满一次
+- 每一步写进去的片段都必须是**完整可用的代码**，不要留下半截标签
+- 不要重复已经写进文件的段落
+
+输出格式（必须严格遵守，不要用 <invoke>/<parameter> 等其它格式）：
+${signalLine}
+2. 紧跟 <function_calls> 块，内含一个 <function_call>
+3. <function_call> 里依次是 <tool>工具名</tool> 与 <args_json><![CDATA[...]]></args_json>
+4. </function_calls> 之后不得有任何文字
+
+示例（第 1 步，注意参数体量）：
+${signal}
+<function_calls>
+  <function_call>
+    <tool>写文件用的工具名</tool>
+    <args_json><![CDATA[{"file_path":"目标文件路径","content":"文件开头部分"}]></args_json>
+  </function_call>
+</function_calls>
+
+现在只输出第 1 步的工具调用，内容控制在 4000 字符以内，不要解释。`;
+  }
+
   return `你上一次的输出在工具调用 XML 完成前被截断了。
 
 被截断的输出：
@@ -388,6 +510,12 @@ export async function attemptToolParseWithRetry({
       retryPrompt = getToolErrorRetryPrompt(currentContent, errorDetails, promptPlan.triggerSignal, promptPlan.tools);
     }
 
+    // 大文件写入截断走"重新分段写入"，回来的是一条**完整的新调用**
+    // （不是续写片段）。若按续写逻辑把它拼到截断内容后面，会得到
+    // 「半个巨型参数 + 一个完整调用」的混合体，必然再次解析失败。
+    const largeFileMode = failureType === 'truncated'
+      && isLargeFileWriteTruncation(currentContent, promptPlan.tools);
+
     const retryContent = await retryToolRequest({
       retryPrompt,
       currentContent,
@@ -398,7 +526,10 @@ export async function attemptToolParseWithRetry({
       attempt: attempt + 1,
     });
 
-    if (failureType === 'truncated' && isContinuationResponse(retryContent, promptPlan.triggerSignal)) {
+    if (largeFileMode) {
+      // 整段替换：丢弃写不完的原文，只保留模型这次重新给出的分段调用。
+      currentContent = String(retryContent || '');
+    } else if (failureType === 'truncated' && isContinuationResponse(retryContent, promptPlan.triggerSignal)) {
       currentContent = mergeTruncatedAndContinuation(currentContent, retryContent);
     } else {
       currentContent = String(retryContent || '');

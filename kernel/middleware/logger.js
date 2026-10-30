@@ -142,8 +142,15 @@ export function recordToolFailure(event = {}) {
   try {
     const raw = String(event.content || '');
     // 保留尾部：XML 结构错误几乎总在末尾（未闭合、CDATA 写错、多余文字）。
-    // 头部保留一小段用于确认触发信号是否存在。
-    const MAX = 4000;
+    //
+    // 窗口必须够大。初版只留 4000 字符，结果真实故障（2026-10-30 鹈鹕 SVG）
+    // 的 20,866 字符输出被截到末尾 4000，恰好把判断"是否真的写完了"的
+    // 关键段落切掉——只能看出它在写 SVG，看不出触发信号到底出现过没有。
+    // 改留 24000：覆盖绝大多数单次输出，同时给尾部留足定位空间。
+    const TAIL_MAX = 24000;
+    // 头部也要留：用于确认触发信号、<function_calls> 是否存在。只留尾部时
+    // 无法区分"信号从未出现"与"信号出现但被截断"。
+    const HEAD_MAX = 2000;
     const entry = {
       time: new Date().toISOString(),
       type: 'tool_parse_failure',
@@ -152,8 +159,9 @@ export function recordToolFailure(event = {}) {
       attempts: Number.isFinite(event.attempts) ? event.attempts : null,
       errorDetails: String(event.errorDetails || '').slice(0, 2000) || null,
       contentLength: raw.length,
-      contentTail: raw.length > MAX ? raw.slice(-MAX) : raw,
-      contentTruncated: raw.length > MAX,
+      contentHead: raw.slice(0, HEAD_MAX),
+      contentTail: raw.length > TAIL_MAX ? raw.slice(-TAIL_MAX) : raw,
+      contentTruncated: raw.length > TAIL_MAX,
     };
     appendFileSync(getToolFailurePath(), JSON.stringify(entry) + '\n');
   } catch (e) {
