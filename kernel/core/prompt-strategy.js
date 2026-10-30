@@ -1387,13 +1387,68 @@ function parseApplyPatchXml(text, { tools = [], toolChoice = 'auto' } = {}) {
   };
 }
 
-// 模型常把 CDATA 结束标记 `]]>` 写成 `]>`（少一个 `]`）或 `]]]>`（多一个）。
-// 只有紧跟 </args_json> 或 </patch> 闭合标签时才规范化，避免误改参数值里
-// 恰好出现的 `]>` 字面量。修好后 skipCdata / extractCdata 才能正确解析，
-// 否则整个 <function_calls> 块会被判定为未闭合而失败，最终只剩裸 <tool> 泄漏。
+// 模型常把 CDATA 结束标记 `]]>` 写成 `]>`（少一个 `]`）或 `]]]>`（多一个），
+// 甚至**完全忘记写**，直接跟 `</args_json>`。
+//
+// 2026-10-30 实测（分段写入成功的那次）：模型正确输出了完整 HTML、留了
+// 续写锚点、闭合了 function_calls，整个 3,212 字符的结构无误，唯一的问题
+// 是 `</html>"}]` 之后**没有 `]]>`** 就进了 `</args_json>`。解析器据此认定
+// CDATA 未闭合 → 整个块被判 truncated → 三次重试全部失败。
+//
+// 这是可以无损修复的：`<args_json>` 里以 `<![CDATA[` 开头时，闭合标签前
+// 必然需要一个 `]]>`。补上它不改变任何参数值语义。
+//
+// 只在紧跟 </args_json> / </patch> 时操作，避免误改参数值里恰好出现的
+// `]>` 字面量。
 export function repairMalformedCdataClose(text) {
   if (typeof text !== 'string' || text.indexOf('<![CDATA[') < 0) return text;
-  return text.replace(/\]{1,3}>(\s*<\/(?:args_json|patch)\s*>)/gi, ']]>$1');
+  let out = text
+    // 情形一：`]>` / `]]]>` 等写法不规范
+    .replace(/\]{1,3}>(\s*<\/(?:args_json|patch)\s*>)/gi, ']]>$1');
+
+  // 情形二：<args_json> 以 <![CDATA[ 开头，但整块里没有任何 ]]>。
+  //
+  // 不能用「找第一个 </args_json>」的惰性正则：CDATA 里可能出现
+  // `</function_calls>`、`</args_json>` 这类字面量（已有测试覆盖），
+  // 惰性匹配会在字面量处提前收口，把后面的真实内容切掉。
+  //
+  // 改为顺序扫描：定位每个 <args_json>，看它是否紧跟 <![CDATA[，
+  // 再看从该 CDATA 起点到**下一个 </function_call>** 之间有没有 ]]>。
+  // 有就跳过（正常闭合），没有则在下一个 </args_json> 前补上。
+  const openRx = /<args_json[^>]*>/gi;
+  const CDATA_OPEN = '<![CDATA[';
+  const CDATA_CLOSE = ']]>';
+  let result = '';
+  let cursor = 0;
+  let openMatch;
+  while ((openMatch = openRx.exec(out)) !== null) {
+    const openEnd = openMatch.index + openMatch[0].length;
+    if (!out.startsWith(CDATA_OPEN, openEnd)) continue;
+
+    const cdataStart = openEnd + CDATA_OPEN.length;
+    // 只认「真正的」CDATA 闭合：]]> 后面紧跟 </args_json>。
+    // CDATA 正文里可能含 ]]> 字面量（如参数值就是一段 CDATA），
+    // 那种情况下后面的字符不是闭合标签，不能算已闭合。
+    const properClose = out.indexOf(`${CDATA_CLOSE}</args_json>`, cdataStart);
+    const looseClose = out.indexOf(CDATA_CLOSE, cdataStart);
+    if (properClose >= 0) continue;                     // 已正确闭合，跳过
+    // 没有严格闭合，但存在 ]]>（可能是 ]]> 后跟空白再闭合）：也算闭合
+    if (looseClose >= 0) {
+      const afterClose = out.slice(looseClose + CDATA_CLOSE.length);
+      if (/^\s*<\/args_json>/.test(afterClose)) continue;
+    }
+
+    // 确实未闭合：补在最后一个 </args_json> 前。
+    const closeIdx = out.lastIndexOf('</args_json>', out.indexOf('</function_call>', cdataStart) >= 0
+      ? out.indexOf('</function_call>', cdataStart)
+      : out.length);
+    if (closeIdx < cdataStart) continue;
+    result += out.slice(cursor, closeIdx) + CDATA_CLOSE;
+    cursor = closeIdx;
+    openRx.lastIndex = closeIdx;
+  }
+  if (result) out = result + out.slice(cursor);
+  return out;
 }
 
 export function parseXmlToolCallsDetailed(rawText, { triggerSignal, tools = [], toolChoice = 'auto' } = {}) {
