@@ -2,7 +2,7 @@
 
 把 **OmniAPI 的转发能力内嵌进 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）** 的插件。
 
-**装完即用**：安装后在 DSH 设置页填入上游 DeepSeek 账号或 Token，
+**装完即用**：安装后在 DSH 设置页填入上游 DeepSeek Web Token，
 模型选择器里就能选到 `omni` 开始对话。不需要另外启动 OmniAPI，
 不需要填服务地址，不需要编辑配置文件。
 
@@ -33,15 +33,34 @@ dsh plugin --profile <profile> add github:qq563778000-lgtm/dsh-web-omni
 
 装好后打开 DSH 设置页，找到 **OmniAPI** 一节：
 
-1. 选择「添加 Token」粘贴 DeepSeek Web Token，或「添加账号」填邮箱密码
-2. 保存后点「测试全部凭据」确认可用
+1. 粘贴 DeepSeek Web Token，点「添加」
+2. 点「测试全部凭据」确认可用
 3. 在模型选择器里选 `omni` 开始对话
+
+### 怎么拿 Token
+
+插件只接受 Token（不再支持账号密码：上游登录接口被 WAF 拦截，成功率
+取决于出口 IP，比复制 Token 更不可靠，且密码要落盘）。
+
+设置页的「如何获取 Token」里有完整步骤，核心是：
+
+1. 浏览器打开 `chat.deepseek.com` 并登录
+2. 按 F12 → Console
+3. 粘贴设置页给出的那段命令并回车，Token 会自动进剪贴板
+
+命令会先试已知的存储键，找不到就扫描 localStorage 里形如 Token 的值；
+命中多个时会全部列出来让你自己挑，不会替你选。
+
+如果命令提示找不到，用最通用的办法：F12 → Network → 任选一个 `api`
+请求 → 复制 `Authorization` 头里 `Bearer ` 之后的部分。
+
+Token 等同于账号登录态，只保存在本机，不要分享。
 
 ### 前置条件
 
 - DeepSeek Harness `0.2.1-rc.2` 及以上（`rc.3` 可用）
 - Node.js `^22.19.0 || >=24.0.0`
-- 一个可用的 DeepSeek Web 账号或 Token（插件不提供凭据）
+- 一个可用的 DeepSeek Web Token（插件不提供）
 
 ## 更新
 

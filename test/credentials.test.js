@@ -160,3 +160,51 @@ test('不会写到主项目的 config.json', async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Token 输入清洗（2026-10-30）
+//
+// 用户复制 token 时几乎总会带上包装：DevTools 复制的带引号，Network 面板
+// 复制的带 "Bearer " 前缀，某些工具复制会带换行。直接存进去会被上游判为
+// 无效，而错误只说"token 无效"，用户很难想到是多复制了几个字符。
+// ---------------------------------------------------------------------------
+
+test('addToken 清洗引号、Bearer 前缀与换行', async () => {
+  const { dir } = await setup();
+  try {
+    const cred = await loadCredentials();
+
+    const variants = [
+      `"${'a'.repeat(64)}"`,
+      `Bearer ${'b'.repeat(64)}`,
+      `  ${'c'.repeat(64)}\n`,
+      `bearer ${'d'.repeat(64)}`,
+    ];
+    for (const raw of variants) {
+      await cred.addToken({ token: raw });
+    }
+
+    const raw = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
+    const tokens = raw.deepseek.tokens;
+    assert.equal(tokens.length, 4);
+    assert.deepEqual(tokens, [
+      'a'.repeat(64),
+      'b'.repeat(64),
+      'c'.repeat(64),
+      'd'.repeat(64),
+    ], '落盘内容必须是纯 token，不含引号/Bearer/换行');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('清洗后为空的输入被拒绝', async () => {
+  const { dir } = await setup();
+  try {
+    const cred = await loadCredentials();
+    await assert.rejects(() => cred.addToken({ token: '   ' }), /不能为空/);
+    await assert.rejects(() => cred.addToken({ token: '"' }), /不能为空/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

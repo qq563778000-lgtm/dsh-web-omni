@@ -14,3 +14,6 @@ logs/
 # 系统杂项
 .DS_Store
 Thumbs.db
+
+# 开发期生成物（scripts/preview-settings.mjs 的输出）
+settings-preview.png
