@@ -800,6 +800,35 @@ function decodeXmlEntities(value) {
     .replace(/&amp;/g, '&');
 }
 
+/** CDATA 闭合残片的两种写法（含被误插 `}` 污染的形态）。 */
+const CDATA_CLOSER_PATTERNS = [
+  /\]{1,4}\s*>$/,        // ]>  ]]>  ]]]>
+  /\]{1,4}\s*\}\s*>$/,   // ]}> 等被 } 污染的形态
+];
+
+/**
+ * 从尾部反复剥掉 CDATA 闭合残片，直到尾部干净。
+ *
+ * 为什么标准分支也需要：模型把闭合符写成 `]}>` 后**紧接着**又补了正确的
+ * `]]>`（实机原文 `{"…"}]}>]]>`）。`/\]\]>/` 能匹配到末尾那对 `]]>`，
+ * 于是被误写的 `}]}>` 整段留在了"内容"里——只修兜底分支完全没用。
+ */
+function stripCdataClosers(value) {
+  let out = String(value || '').trim();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const rx of CDATA_CLOSER_PATTERNS) {
+      const next = out.replace(rx, '').trim();
+      if (next !== out) {
+        out = next;
+        changed = true;
+      }
+    }
+  }
+  return out;
+}
+
 function extractCdata(raw) {
   const text = String(raw || '');
   const cdataRx = /<!\[CDATA\[([\s\S]*?)\]\]>/g;
@@ -807,9 +836,29 @@ function extractCdata(raw) {
   if (matches.length) {
     const outside = text.replace(cdataRx, '').trim();
     if (outside) return null;
-    return matches.map(match => match[1]).join('');
+    // 逐段再清一次尾部残片：闭合符写错时，残片会被吞进内容里。
+    return matches.map(match => stripCdataClosers(match[1])).join('');
   }
-  return decodeXmlEntities(text).trim();
+
+  // CDATA 闭合符写错时，完整的 `]]>` 匹配失败，会落到这里。
+  //
+  // 真实故障（2026-11-02 DSH，tool-failures-2026-11-02.jsonl 原文）：
+  //
+  //   <args_json><![CDATA[{"description":"…","command":"…"}]}>]]></args_json>
+  //                                                    ↑ 这里少一个 ]
+  //
+  // 模型把闭合符写成了 `]}>`（`]` 与 `>` 之间误插一个 `}`），**紧接着**
+  // 才补上正确的 `]]>`。于是整段内容变成：
+  //
+  //   {"description":"…","command":"…"}]}>       ← 尾部的 `]}>` 是残片
+  //
+  // JSON 因此非法，两次重试全部失败，整条工具调用作废。
+  //
+  // 处理办法：先把开标记去掉，再从尾部**反复**剥掉"CDATA 闭合残片"。
+  // 剥完之后剩下的才是真正的参数内容，交给括号修复按结构判定。
+  const stripped = stripCdataClosers(text.replace(/<!\[CDATA\[/g, ''));
+  if (!stripped) return null;
+  return decodeXmlEntities(stripped);
 }
 
 function extractTagBody(block, tag) {
@@ -1050,23 +1099,46 @@ function balanceJsonBraces(text) {
 }
 
 function trimExtraClosingBraces(text) {
-  if (typeof text !== 'string' || !text.endsWith('}')) return null;
-  // 从末尾往前数连续闭合花括号，全部可能的多余量都试一遍。
-  let trailingCloseCount = 0;
-  for (let i = text.length - 1; i >= 0 && text[i] === '}'; i--) trailingCloseCount++;
-  if (trailingCloseCount <= 1) return null;
-  // 尝试从去掉 1 个到去掉 (trailingCloseCount-1) 个尾部 }
-  for (let trim = 1; trim < trailingCloseCount; trim++) {
-    const candidate = text.slice(0, text.length - trim);
-    // 快速平衡检查
-    let depth = 0;
-    for (let i = 0; i < candidate.length; i++) {
-      if (candidate[i] === '{') depth++;
-      else if (candidate[i] === '}') depth--;
+  if (typeof text !== 'string' || !text) return null;
+
+  // 用括号栈找出"在哪一步已经回到顶层"，之后若还有字符，说明是多余的。
+  //
+  // 真实故障（2026-11-02 DSH）：模型把 `]}` 写成了 `]}` 之后再补一个 `}`：
+  //
+  //   <args_json><![CDATA[{"description":"…","command":"…"}]}></args_json>
+  //                                                  ↑ 多了一个 }
+  //
+  // 旧实现只处理"尾部连续多个 }"（`trimExtraClosingBraces` 要求末尾连续
+  // `}` 数量 > 1），这里末尾只有一个 `}`，于是直接放弃，报
+  // 「<args_json> must contain a valid JSON object」，两次重试全部失败。
+  //
+  // 新的判据不看尾部形状，而是看**结构**：扫描时一旦栈清空，对象就已经
+  // 完整结束；若后面还有内容（另一个 `}`、`]` 或任何字符），把它们全部
+  // 丢掉即可。这样 `}]}`、`}]}]`、`}额外文字` 都能修好。
+  let inString = false;
+  let closedAt = -1;
+  const stack = [];
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      if (char === '\\') { i++; continue; }
+      if (char === '"') inString = false;
+      continue;
     }
-    if (depth === 0 && candidate.endsWith('}')) return candidate;
+    if (char === '"') { inString = true; continue; }
+    if (char === '{' || char === '[') stack.push(char);
+    else if (char === '}' || char === ']') {
+      if (stack.length === 0) return null;   // 多余的闭合符出现在开头附近，不修
+      stack.pop();
+      if (stack.length === 0) { closedAt = i; break; }   // 对象在此完整结束
+    }
   }
-  return null;
+  if (closedAt < 0) return null;                      // 一直没闭合，交给补括号逻辑
+  const tail = text.slice(closedAt + 1).trim();
+  if (!tail) return null;                             // 本来就干净
+  // 尾巴必须全是闭合符/空白，否则可能是"对象后跟了别的数据"，不敢乱删。
+  if (!/^[}\],\s]*$/.test(tail)) return null;
+  return text.slice(0, closedAt + 1);
 }
 
 const TOOL_NAME_ALIASES = new Map([
