@@ -1,4 +1,4 @@
-import { acquireToken, getPoolInfo, getTotalCapacity } from './auth.js';
+import { acquireToken, getCooldownRemainingMs, getPoolInfo, getTotalCapacity } from './auth.js';
 
 // 队列上限。低配服务器上 100 个排队请求意义不大（多数会先超时），
 // 反而让等待时间拉长、内存与连接占用变高。收紧到 50，可用 QUEUE_MAX_SIZE 覆盖。
@@ -53,6 +53,30 @@ export function enqueueRequest(preferVision, timeoutMs = 30000, preferredTokenPr
       clearTimeout(timer);
       reject(err);
     };
+
+    // 全部凭据都在限流冷却中：立刻给出带等待时长的明确错误，不进队列。
+    //
+    // 排队等一个固定时长的冷却没有意义——冷却是"到点才恢复"，不是
+    // "等别人让出"。实测把请求放进 30s 队列，用户只会收到
+    // 「Request timed out waiting for available token」，既看不出是限流，
+    // 也不知道该等多久。这里提前失败，错误信息直接说明还要等多久，
+    // 上层（runner）据此给出可读提示，用户也只需稍后重发。
+    const cooldownMs = getCooldownRemainingMs();
+    if (cooldownMs > 0) {
+      settled = true;
+      clearTimeout(timer);
+      const seconds = Math.ceil(cooldownMs / 1000);
+      const err = new Error(
+        `上游限流中，约 ${seconds} 秒后自动恢复（消息发送过于频繁，与账号无关，无需更换凭据）`,
+      );
+      err.status = 429;
+      err.type = 'rate_limit_error';
+      err.code = 'rate_limited';
+      err.retryable = true;
+      err.retryAfterMs = cooldownMs;
+      reject(err);
+      return;
+    }
 
     // Try immediate acquire first
     const slot = acquireToken(preferVision, preferredTokenPrefix);

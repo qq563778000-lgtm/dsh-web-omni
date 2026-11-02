@@ -580,7 +580,16 @@ export async function* runDeepSeek(internalRequest, context = {}) {
             disableToken(slot.token, { reason: '账号被禁言 (biz_code=5)', disabledUntil: Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS, source: 'auto', detail: upstream, eventType: 'muted' });
           }
         }
-        throw new InternalAPIError(event.message || `DeepSeek error ${event.code}`, {
+        // 限流文案要直接告诉用户"等一会儿就好、不用换凭据"。
+        //
+        // 上游原文是「消息发送过于频繁，请稍后重试」，没有时长、也没说明
+        // 与账号无关。用户看到它无法判断该做什么——换凭据？改配置？还是
+        // 等？实测这条限制与凭据无关、约 20 秒自行恢复，把这些写进提示。
+        const rateLimitMessage = isRateLimited
+          ? `上游限流：${event.message || '消息发送过于频繁'}。`
+            + '该限制与账号凭据无关，稍等约 20 秒后重试即可，无需更换凭据。'
+          : null;
+        throw new InternalAPIError(rateLimitMessage || event.message || `DeepSeek error ${event.code}`, {
           // 限流应回报 429 rate_limit_error，客户端据此退避重试；
           // 其它上游错误按 502 api_error 处理。
           status: isRateLimited ? 429 : 502,

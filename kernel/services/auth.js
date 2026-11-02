@@ -496,6 +496,42 @@ function logPoolReady() {
   console.log(`Pool ready: ${alive}/${tokenPool.length} tokens alive${disabled ? ` (${disabled} disabled)` : ''}`);
 }
 
+/**
+ * 查询"所有凭据都在冷却中"时的最短剩余时间（毫秒）。
+ *
+ * 为什么需要它：冷却与"满载"是两种完全不同的等待。满载会随着在途请求
+ * 完成而很快释放，排队是对的；冷却则是一个**固定时长的死等**（基础 20s，
+ * 连续命中还会递增），让请求在队列里干等 30s 后超时，只会给用户一个
+ * "Request timed out waiting for available token"——既看不懂，也没法处置。
+ *
+ * 返回 0 表示有凭据可用（或不可用的原因是禁用/满载），调用方不应据此
+ * 提前失败。
+ */
+export function getCooldownRemainingMs() {
+  const now = Date.now();
+  const live = tokenPool.filter(t => !t.disabled && t.token);
+  if (live.length === 0) return 0;
+
+  // 只要还有凭据既没满载也没冷却，就不算"全在冷却"。
+  const usable = live.some(t =>
+    t.activeRequests < maxConcurrentPerToken() && (t.cooldownUntil || 0) <= now,
+  );
+  if (usable) return 0;
+
+  // 全部不可用：只有当它们**全部**因冷却时才算冷却等待。
+  // 有凭据是满载导致的不可用，则继续排队（满载很快会释放）。
+  const allCoolingDown = live.every(t =>
+    (t.cooldownUntil || 0) > now || t.activeRequests >= maxConcurrentPerToken(),
+  );
+  if (!allCoolingDown) return 0;
+
+  const remaining = live
+    .filter(t => (t.cooldownUntil || 0) > now)
+    .map(t => t.cooldownUntil - now);
+  if (remaining.length === 0) return 0;
+  return Math.max(0, Math.min(...remaining));
+}
+
 export function acquireToken(preferVision = false, preferredTokenPrefix = null) {
   const now = Date.now();
   // 冷却/禁用中的 token 不参与分配。冷却到期自动恢复可用（无需外部清理）。
@@ -678,8 +714,13 @@ export function enableToken(tokenOrEntry) {
 
 // 限流冷却基础时长（秒）。命中后 token 暂时退出分配，到期自动恢复；
 // 连续命中则按次数递增（指数退避，上限 1 小时），避免持续撞限流。
-const RATE_LIMIT_BASE_COOLDOWN_SECONDS = 60;
-const RATE_LIMIT_MAX_COOLDOWN_SECONDS = 3600;
+//
+// 基础值取 20s 而非 60s：实测（2026-11-02）上游「消息发送过于频繁」这条
+// 限流在 18–26 秒内就自行恢复。原来固定 60s 会让用户在本可以继续的时候
+// 白等 40 秒，而且第二次命中的指数退避直接跳到 120s，体验上像"彻底坏了"。
+// 递增策略保留——连续命中确实是更严重的信号，值得更长的静默期。
+const RATE_LIMIT_BASE_COOLDOWN_SECONDS = 20;
+const RATE_LIMIT_MAX_COOLDOWN_SECONDS = 300;
 
 /**
  * 上报一次限流命中（HTTP 429 / 上游限流语义）。

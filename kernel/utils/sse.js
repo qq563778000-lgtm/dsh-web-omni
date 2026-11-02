@@ -235,7 +235,65 @@ function countAvailableTokens() {
   }
 }
 
-export async function completion({ modelType, prompt, thinkingEnabled = false, searchEnabled = false, parentMessageId = null, refFileIds = [], preferVision = false, resolveSession = null, getPrompt = null, signal = null, initialSlot = null, preferredTokenPrefix = null }) {
+/**
+ * 上游限流后的整体退避重试。
+ *
+ * 为什么要单独一层：凭据级故障转移只解决"换一个账号"的情形。当池中只有
+ * 一个凭据（常见配置）或限流是 IP 级（与账号无关）时，换凭据无从谈起，
+ * 唯一能做的就是**等**。
+ *
+ * 真实故障（2026-11-02 DSH）：上游以 `event: hint` 下发
+ * 「消息发送过于频繁，请稍后重试」。旧实现完全忽略该事件，把它当成空流，
+ * 于是报「上游返回空响应」——用户看到的是一个和真实原因毫无关系的错误，
+ * 而且任务当场终止，需要手动重发。
+ *
+ * 上游这个限制是短暂的（实测数秒内恢复），等待后重发即可，
+ * 不需要用户干预。
+ */
+async function completionWithRateLimitRetry(options) {
+  throwIfAborted(options.signal);
+  const WAITS_MS = [1000, 2500, 5000];
+  let lastErr = null;
+
+  for (let attempt = 0; attempt <= WAITS_MS.length; attempt++) {
+    try {
+      return await completionOnce(options);
+    } catch (err) {
+      lastErr = err;
+
+      // 凭据已进入固定冷却（例如队列返回"约 N 秒后恢复"）：这时冷却时长
+      // 远超本层的退避窗口，重试三次只是白白多等 8.5s 再抛同样的错。
+      // 直接上抛，让用户看到确切的恢复时间。
+      if (err?.retryAfterMs && Number(err.retryAfterMs) > 10000) throw err;
+
+      const rateLimited = isRateLimitedError(err);
+      if (!rateLimited || attempt >= WAITS_MS.length) throw err;
+
+      const waitMs = WAITS_MS[attempt];
+      console.warn(
+        `[DeepSeek] 上游限流（${err.message}），${waitMs}ms 后重试`
+        + `（第 ${attempt + 1}/${WAITS_MS.length} 次）`,
+      );
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+      throwIfAborted(options.signal);
+    }
+  }
+  throw lastErr;
+}
+
+/** 判定一个错误是否属于"上游限流、等一会儿就能好"。 */
+function isRateLimitedError(err) {
+  if (!err) return false;
+  if (err.status === 429 || err.type === 'rate_limit_error') return true;
+  if (err.code === 429 || err.code === 40301) return true;
+  return /rate limit|429|发送过于频繁|稍后重试|rate_limit_reached/i.test(String(err.message || ''));
+}
+
+export async function completion(options) {
+  return completionWithRateLimitRetry(options);
+}
+
+async function completionOnce({ modelType, prompt, thinkingEnabled = false, searchEnabled = false, parentMessageId = null, refFileIds = [], preferVision = false, resolveSession = null, getPrompt = null, signal = null, initialSlot = null, preferredTokenPrefix = null }) {
   throwIfAborted(signal);
 
   // 凭据级故障转移：一个凭据被限流/失效时，换池中其它凭据重试，
@@ -546,6 +604,9 @@ export async function* parseSSEStream(body, { signal = null } = {}) {
   const decoder = new TextDecoder();
   let buffer = '';
   let messageIds = {};
+  // 上一个 SSE 事件名是 hint 时置位，紧随其后的 data 行按提示处理。
+  // SSE 的 event/data 是分开的行，必须跨行记住。
+  let pendingHint = false;
   let currentFragmentType = null;
   const fragmentTypes = new Map();
   let nextFragmentIndex = 0;
@@ -610,7 +671,28 @@ export async function* parseSSEStream(body, { signal = null } = {}) {
 
       for (const line of lines) {
         if (line.startsWith('event:')) {
-          if (line.slice(6).trim() === 'close') return;
+          const eventName = line.slice(6).trim();
+          // `event: hint` 是上游的通知通道，限流/风控都以它下发。
+          //
+          // 真实故障（2026-11-02 DSH）：上游对「消息发送过于频繁」返回
+          //
+          //   event: ready
+          //   event: hint
+          //   data: {"type":"error","content":"消息发送过于频繁，请稍后重试",
+          //          "clear_response":true,"finish_reason":"rate_limit_reached"}
+          //   event: close
+          //
+          // 整个响应只有 281 字节。旧实现只认 `event: close`，把 hint 直接
+          // 跳过，于是这条流"什么内容都没产出"——runner 判为空流，报
+          // 「上游返回空响应」，并把该凭据记一次错误。
+          //
+          // 真正的原因是**限流**：应当退避重试，而不是当成上游故障、更不该
+          // 惩罚凭据（该限制与凭据无关）。这里把它转成标准 error 事件。
+          if (eventName === 'hint') {
+            pendingHint = true;
+            continue;
+          }
+          if (eventName === 'close') return;
           continue;
         }
         if (!line.startsWith('data:')) continue;
@@ -619,6 +701,26 @@ export async function* parseSSEStream(body, { signal = null } = {}) {
 
         try {
           const parsed = JSON.parse(data);
+
+          // hint 事件的数据体：上游用它下发限流/风控通知。
+          if (pendingHint && parsed?.type === 'error') {
+            pendingHint = false;
+            const finishReason = String(parsed.finish_reason || '');
+            const isRateLimit = finishReason === 'rate_limit_reached'
+              || /频繁|稍后重试|rate.?limit/i.test(String(parsed.content || ''));
+            yield {
+              type: 'error',
+              // 用 429 让上层走"限流"语义：换凭据 + 退避重试，
+              // 而不是当成上游故障直接失败。
+              code: isRateLimit ? 429 : null,
+              message: String(parsed.content || parsed.finish_reason || 'DeepSeek hint error'),
+              // 标记该流已显式告知失败，避免被误判为空流。
+              fromHint: true,
+              messageIds,
+            };
+            return;
+          }
+          if (pendingHint) pendingHint = false;
 
           // Check for error codes mid-stream
           if (parsed.code === 40003) {
