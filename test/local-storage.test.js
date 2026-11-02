@@ -95,6 +95,21 @@ test('userToken 与 userTokens 不会互相误命中', () => {
   }
 });
 
+test('parseStoredToken 支持 {"value": token} 包装形态', () => {
+  // 当前 Chrome 156 上 userToken 的实际存法（实测 2026-11-02）。
+  // 不认这一层就会返回 null——值就在眼前却取不出来。
+  const wrapped = JSON.stringify({ value: TOKEN, __version: '0' });
+  assert.equal(parseStoredToken(wrapped), TOKEN);
+});
+
+test('parseStoredToken 接受标准 base64（含 + 与 /）', () => {
+  // 实测的 DeepSeek token 用的是标准 base64，不是 base64url。
+  // 只认 base64url 会把真实 token 判为非法。
+  const standard = 'bEssK7h1WdmT3nL8Q4GUe+k0EE4ntQqqRUWQFQBgdr/RFqyknnq6YTORO/Mu1cfT';
+  assert.equal(parseStoredToken(standard), standard);
+  assert.equal(parseStoredToken(JSON.stringify({ value: standard, __version: '0' })), standard);
+});
+
 test('parseStoredToken 支持三种历史形态', () => {
   // 旧版：值就是 token
   assert.equal(parseStoredToken(TOKEN), TOKEN);
