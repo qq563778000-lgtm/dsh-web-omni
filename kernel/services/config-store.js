@@ -20,6 +20,21 @@ const DEFAULT_CONFIG = Object.freeze({
     systemFingerprint: 'fp_omni_v1',
   },
   runtime: {
+    /**
+     * 对话模式。
+     *
+     *   'agent' —— 默认。把 DSH 的全部工具声明发给上游，模型可自主调用
+     *              （读文件、执行命令、检索……），即插件原本的行为。
+     *   'ask'   —— 纯问答。**不向上游声明任何工具**，提示词里也不注入
+     *              工具说明与触发信号。模型只会用自然语言回答，
+     *              不会发起任何工具调用。
+     *
+     * 为什么不做成"发工具但禁止调用"：DeepSeek Web 端只要收到工具声明，
+     * 就会按工具协议组织输出；模型仍可能写出一段调用标记。那种"禁止"
+     * 只能在解析层丢弃，模型已经把 token 花在了拼调用上，作答质量反而下降。
+     * 完全不声明工具，模型才真正进入纯对话状态。
+     */
+    mode: 'agent',
     sessionTtlSeconds: 1800,
     // 会话亲和（会话续传）默认开启。
     //
@@ -256,6 +271,7 @@ function normalizeConfig(input) {
   );
   merged.server.systemFingerprint = String(merged.server.systemFingerprint || 'fp_omni_v1').trim() || 'fp_omni_v1';
 
+  merged.runtime.mode = String(merged.runtime.mode || '').toLowerCase() === 'ask' ? 'ask' : 'agent';
   merged.runtime.sessionTtlSeconds = parseIntValue(merged.runtime.sessionTtlSeconds, 1800, 1);
   merged.runtime.enableConversationAffinity = Boolean(merged.runtime.enableConversationAffinity);
   merged.runtime.conversationTtlMs = parseIntValue(merged.runtime.conversationTtlMs, 1800000, 1000);

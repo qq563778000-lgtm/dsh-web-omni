@@ -30,6 +30,8 @@ window.__ModuleLoader__.load({
     const STATUS_PATH = '/api/dsh-web-omni/status';
     const CREDENTIALS_PATH = '/api/dsh-web-omni/credentials';
     const TEST_PATH = '/api/dsh-web-omni/test';
+    const MODE_PATH = '/api/dsh-web-omni/mode';
+    const BROWSER_TOKEN_PATH = '/api/dsh-web-omni/browser-token';
 
     const text = {
       title: 'dsh-web-omni',
@@ -55,6 +57,17 @@ window.__ModuleLoader__.load({
       copied: '已复制',
       helpFallback: '若命令提示找不到，请在 Network 面板里任选一个 api 请求，复制请求头 Authorization 中 Bearer 之后的字符。',
       helpPrivacy: 'Token 等同于账号登录态，只保存在本机，不要分享给他人。',
+      modeTitle: '对话模式',
+      modeAgent: 'Agent（可调用工具）',
+      modeAgentDesc: '模型可以读写文件、执行命令、检索资料，完成多步任务。',
+      modeAsk: 'Ask（纯对话）',
+      modeAskDesc: '只做问答，不向上游声明任何工具，模型不会发起工具调用。',
+      autoFetch: '从浏览器获取',
+      autoFetching: '正在读取…',
+      autoFetchOk: (browser) => `已从 ${browser} 读取并添加 Token。`,
+      autoFetchFail: '未能从浏览器读到 Token。',
+      autoFetchAbe: 'Chrome / Edge 127 及以上版本启用了 App-Bound 加密（cookie 前缀 v20），密钥由浏览器自身保管，其它程序无法读取——这是浏览器为防 cookie 窃取而设计的，无法绕过。请改用下方的手动方式。',
+      autoFetchNoLogin: '没有在浏览器里找到 DeepSeek 的登录态。请先在浏览器登录 chat.deepseek.com，或用下方手动方式。',
     };
 
     /**
@@ -154,6 +167,21 @@ window.__ModuleLoader__.load({
   background:var(--dsw-alias-bg-base,#fff);border-radius:var(--dsw-radius-md,8px)}
 .dwo-hint{margin:0;font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
 
+.dwo-mode{display:grid;gap:8px}
+.dwo-mode-head{display:flex;align-items:baseline;gap:8px}
+.dwo-mode-label{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#6b6b6b)}
+.dwo-seg{display:flex;gap:0;border:1px solid var(--dsw-alias-border-l4,rgba(127,127,127,.25));
+  border-radius:var(--dsw-radius-md,8px);overflow:hidden;background:var(--dsw-alias-bg-layer-1,transparent)}
+.dwo-seg-btn{flex:1;height:34px;padding:0 12px;font:inherit;font-size:12px;cursor:pointer;
+  border:none;background:transparent;color:var(--dsw-alias-label-secondary,#6b6b6b);
+  transition:background .12s ease,color .12s ease}
+.dwo-seg-btn+.dwo-seg-btn{border-left:1px solid var(--dsw-alias-border-l4,rgba(127,127,127,.25))}
+.dwo-seg-btn:hover:not(:disabled):not(.dwo-seg-on){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08))}
+.dwo-seg-btn.dwo-seg-on{background:var(--dsw-alias-label-primary,#1f1e1d);color:var(--dsw-alias-bg-base,#fff);cursor:default}
+.dwo-seg-btn:disabled{opacity:.5;cursor:default}
+.dwo-seg-btn:focus-visible{outline:2px solid var(--dsw-alias-label-primary,#1f1e1d);outline-offset:-2px}
+.dwo-mode-desc{margin:0;font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
+
 .dwo-test{list-style:none;margin:0;padding:0;display:grid;gap:4px;font-size:12px;
   color:var(--dsw-alias-label-secondary,#6b6b6b)}
 .dwo-test-ok{color:var(--dsw-alias-state-success-primary,#16a34a)}
@@ -239,6 +267,40 @@ window.__ModuleLoader__.load({
       ]);
     }
 
+    /**
+     * 对话模式开关（Ask / Agent）。
+     *
+     * 切换后立刻生效：适配器每次请求都会重读配置，不需要重启 DSH。
+     * 因此这里不做"保存"按钮，点哪个就是哪个。
+     */
+    function ModeSwitch({ mode, busy, onChange }) {
+      const options = [
+        { id: 'agent', label: text.modeAgent, desc: text.modeAgentDesc },
+        { id: 'ask', label: text.modeAsk, desc: text.modeAskDesc },
+      ];
+      const current = options.find(option => option.id === mode) || options[0];
+
+      return h('div', { className: 'dwo-mode' }, [
+        h('div', { key: 'head', className: 'dwo-mode-head' }, [
+          h('span', { key: 'l', className: 'dwo-mode-label' }, text.modeTitle),
+        ]),
+        h('div', {
+          key: 'seg',
+          className: 'dwo-seg',
+          role: 'group',
+          'aria-label': text.modeTitle,
+        }, options.map(option => h('button', {
+          key: option.id,
+          type: 'button',
+          className: `dwo-seg-btn${option.id === current.id ? ' dwo-seg-on' : ''}`,
+          onClick: () => { if (option.id !== current.id) onChange(option.id); },
+          disabled: busy,
+          'aria-pressed': option.id === current.id,
+        }, option.label))),
+        h('p', { key: 'd', className: 'dwo-mode-desc' }, current.desc),
+      ]);
+    }
+
     function Section() {
       useStyles();
       const [state, setState] = useState(null);
@@ -246,10 +308,15 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false);
       const [testResult, setTestResult] = useState(null);
       const [token, setToken] = useState('');
+      const [mode, setMode] = useState('agent');
+      const [autoBusy, setAutoBusy] = useState(false);
+      const [autoResult, setAutoResult] = useState(null);
 
       const load = useCallback(async () => {
         try {
-          setState(await request(STATUS_PATH));
+          const value = await request(STATUS_PATH);
+          setState(value);
+          if (value?.mode === 'ask' || value?.mode === 'agent') setMode(value.mode);
           setError(null);
         } catch (err) {
           setError(String(err.message || err));
@@ -257,6 +324,18 @@ window.__ModuleLoader__.load({
       }, []);
 
       useEffect(() => { load(); }, [load]);
+
+      const changeMode = async (next) => {
+        const previous = mode;
+        setMode(next);          // 乐观更新：切换是本地状态，失败再回滚
+        setError(null);
+        try {
+          await request(MODE_PATH, { method: 'POST', body: JSON.stringify({ mode: next }) });
+        } catch (err) {
+          setMode(previous);
+          setError(String(err.message || err));
+        }
+      };
 
       const submit = async () => {
         if (!token.trim()) return;
@@ -290,6 +369,36 @@ window.__ModuleLoader__.load({
           setError(String(err.message || err));
         } finally {
           setBusy(false);
+        }
+      };
+
+      /**
+       * 从本机浏览器读取 Token。
+       *
+       * 成功则直接入库并刷新；失败时给出**可操作**的原因：
+       *   - 是没登录 → 提示先去登录
+       *   - 是浏览器加密（ABE）→ 说明这是浏览器安全设计，无法绕过，
+       *     并把手动方式指出来
+       *
+       * 这两种情况的处置完全不同，笼统报"失败"只会让用户反复重试。
+       */
+      const autoFetch = async () => {
+        setAutoBusy(true);
+        setAutoResult(null);
+        setError(null);
+        try {
+          const value = await request(BROWSER_TOKEN_PATH, { method: 'POST' });
+          if (value?.added) {
+            setAutoResult({ kind: 'ok', text: text.autoFetchOk(value.browser) });
+            setState({ ...(state || {}), credentials: value.credentials });
+          } else {
+            setAutoResult({ kind: 'fail', text: text.autoFetchFail });
+          }
+          await load();
+        } catch (err) {
+          setAutoResult({ kind: 'fail', text: String(err.message || err) });
+        } finally {
+          setAutoBusy(false);
         }
       };
 
@@ -367,6 +476,13 @@ window.__ModuleLoader__.load({
 
         ...notices,
 
+        h(ModeSwitch, {
+          key: 'mode',
+          mode,
+          busy,
+          onChange: changeMode,
+        }),
+
         credentials.items.length === 0
           ? h('p', { key: 'empty', className: 'dwo-notice' }, text.empty)
           : h('ul', { key: 'list', className: 'dwo-list' }, rows),
@@ -391,6 +507,32 @@ window.__ModuleLoader__.load({
             disabled: busy || !token.trim(),
           }, text.add),
         ]),
+
+        h('div', { key: 'auto', className: 'dwo-actions' }, [
+          h('button', {
+            key: 'auto',
+            type: 'button',
+            className: 'dwo-btn',
+            onClick: autoFetch,
+            disabled: autoBusy || busy,
+          }, autoBusy ? text.autoFetching : text.autoFetch),
+        ]),
+
+        autoResult
+          ? h('div', { key: 'ar' }, [
+            h('p', {
+              key: 'r',
+              className: `dwo-notice${autoResult.kind === 'ok' ? '' : ' dwo-notice-warn'}`,
+            }, autoResult.text),
+            // 自动获取失败时补一句"为什么"，避免用户反复重试同一个按钮。
+            autoResult.kind === 'fail'
+              ? h('p', { key: 'abe', className: 'dwo-hint' }, text.autoFetchAbe)
+              : null,
+            autoResult.kind === 'fail'
+              ? h('p', { key: 'nl', className: 'dwo-hint' }, text.autoFetchNoLogin)
+              : null,
+          ])
+          : null,
 
         h(Help, { key: 'help' }),
 
