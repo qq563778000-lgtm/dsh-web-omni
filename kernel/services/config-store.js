@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { appRootPath } from '../utils/runtime-paths.js';
@@ -365,13 +365,45 @@ function readDiskConfig(path) {
   return JSON.parse(raw || '{}');
 }
 
+/**
+ * 上次读盘时文件的修改时间（毫秒）。0 表示还没记过。
+ *
+ * 存在的理由：配置文件可以被**插件之外**的写入者改动——最典型的是设置页
+ * 写完文件后，另一个消费者仍持着旧的内存副本。只靠 `loaded` 标志做一次性
+ * 缓存时，这种外部改动永远不可见。
+ */
+let configFileMtimeMs = 0;
+
+function currentFileMtimeMs(path) {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
 export function loadConfig({ force = false } = {}) {
-  if (loaded && !force) return config;
+  // 缓存命中前先看文件是否被改过。
+  //
+  // 真实故障（2026-11-02 DSH）：设置页把 runtime.mode 从 agent 切到 ask
+  // 并写盘成功，但适配器仍按 agent 处理——它读到的是进程启动时缓存的那份
+  // 配置。结果是「开了 ask 模式，模型照样收到 188 个工具声明并照样发起
+  // 工具调用」，用户看到的是开关完全没作用。
+  //
+  // 只看 mtime 而不是每次全量重读：解析 + 深合并 + 凭据合并的成本不低，
+  // 而配置请求发生在每个对话轮次上。stat 是一次系统调用，代价可以忽略。
+  if (loaded && !force) {
+    // 文件没被动过 → 直接用内存里的。动过 → 往下走完整重读。
+    if (currentFileMtimeMs(configPath) === configFileMtimeMs) return config;
+  }
 
   configPath = resolveConfigPath();
   configLoadError = null;
   let disk = {};
   let diskCorrupted = false;
+  // 先记 mtime 再读内容：反过来的话，读的瞬间被改写就会把新内容当成旧的，
+  // 之后一直认为"文件没变"。
+  configFileMtimeMs = currentFileMtimeMs(configPath);
   try {
     disk = readDiskConfig(configPath);
   } catch (error) {
@@ -510,6 +542,9 @@ export function saveConfig(nextConfig = config) {
   // 内存态持有完整并集（含 env 凭据），运行时与后台展示都以它为准。
   config = normalized;
   loaded = true;
+  // 同步 mtime：自己刚写的这份就是最新的，否则下一次 getConfig 会认为
+  // "文件变了"而重读一遍（结果相同，纯属浪费）。
+  configFileMtimeMs = currentFileMtimeMs(path);
   applyConfigToProcessEnv();
   return config;
 }
