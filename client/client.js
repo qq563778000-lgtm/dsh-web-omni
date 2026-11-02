@@ -66,10 +66,12 @@ window.__ModuleLoader__.load({
       autoFetching: '正在读取…',
       autoFetchOk: (browser) => `已从 ${browser} 读取并添加 Token。`,
       autoFetchFail: '未能从浏览器读到 Token。',
-      autoFetchAbeTitle: '无法自动读取：浏览器启用了 App-Bound 加密',
-      autoFetchAbe: 'Chrome / Edge 127 及以上版本启用了 App-Bound 加密（cookie 前缀 v20），密钥由浏览器以自身身份向系统服务申请，其它程序（包括本插件）即使同一 Windows 用户也读不到——这是浏览器为防 cookie 窃取而专门设计的，无法绕过。即使你在浏览器里登录了 DeepSeek，这里依然读不出来。请使用下方的手动方式。',
+      autoFetchPendingTitle: '已登录，但数据还没写入磁盘',
+      autoFetchPending: 'Chrome 在页面打开时会把 localStorage 的写入留在内存里，尚未落盘。请**关闭 chat.deepseek.com 那个标签页**（Ctrl+W），再点一次「从浏览器获取」即可。登录态不会丢失。',
       autoFetchNoLoginTitle: '没有在浏览器里找到 DeepSeek 的登录态',
-      autoFetchNoLogin: '请先在浏览器登录 chat.deepseek.com 后重试；若浏览器版本较新，可能同时受 App-Bound 加密限制。手动方式始终可用（见下方「如何获取 Token」）。',
+      autoFetchNoLogin: '请先在浏览器登录 chat.deepseek.com 后重试。若刚登录过，关闭该标签页让数据落盘再点一次。手动方式始终可用（见下方「如何获取 Token」）。',
+      autoFetchStaleTitle: '读到的是过期登录记录',
+      autoFetchStale: '浏览器里保存的 Token 是较早以前的，上游已判定失效。请在 chat.deepseek.com 重新登录一次，**关闭该标签页**让数据落盘，再点「从浏览器获取」。',
     };
 
     /**
@@ -394,14 +396,22 @@ window.__ModuleLoader__.load({
             setAutoResult({ kind: 'ok', text: text.autoFetchOk(value.browser) });
             setState({ ...(state || {}), credentials: value.credentials });
           } else {
-            // 按后端给出的原因分流：浏览器启用 ABE 时，去登录也没用，
-            // 必须直接说清楚，否则用户会白跑一趟。
-            const abe = value?.reason === 'encrypted-by-browser';
-            setAutoResult({
-              kind: 'fail',
-              reason: abe ? 'abe' : 'not-found',
-              text: abe ? text.autoFetchAbeTitle : text.autoFetchNoLoginTitle,
-            });
+            // 按后端给出的原因分流。三种原因对应三种完全不同的处置：
+            //   stale-token → 读到了但已失效，重新登录
+            //   not-flushed → 已登录但没落盘，关标签页
+            //   not-found   → 确实没登录，去登录
+            // 混在一起说会让用户反复做无用功。
+            const reason = value?.reason === 'stale-token'
+              ? 'stale'
+              : value?.reason === 'not-flushed' ? 'pending' : 'not-found';
+
+            const title = {
+              stale: text.autoFetchStaleTitle,
+              pending: text.autoFetchPendingTitle,
+              'not-found': text.autoFetchNoLoginTitle,
+            }[reason];
+
+            setAutoResult({ kind: 'fail', reason, text: title });
           }
           await load();
         } catch (err) {
@@ -533,10 +543,13 @@ window.__ModuleLoader__.load({
               key: 'r',
               className: `dwo-notice${autoResult.kind === 'ok' ? '' : ' dwo-notice-warn'}`,
             }, autoResult.text),
-            // 失败时只显示与本次原因对应的那一段，避免两种说法互相干扰。
+            // 失败时只显示与本次原因对应的那一段，避免说法互相干扰。
             autoResult.kind === 'fail'
-              ? h('p', { key: 'why', className: 'dwo-hint' },
-                autoResult.reason === 'abe' ? text.autoFetchAbe : text.autoFetchNoLogin)
+              ? h('p', { key: 'why', className: 'dwo-hint' }, {
+                stale: text.autoFetchStale,
+                pending: text.autoFetchPending,
+                'not-found': text.autoFetchNoLogin,
+              }[autoResult.reason] || text.autoFetchNoLogin)
               : null,
           ])
           : null,
