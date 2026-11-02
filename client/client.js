@@ -66,8 +66,10 @@ window.__ModuleLoader__.load({
       autoFetching: '正在读取…',
       autoFetchOk: (browser) => `已从 ${browser} 读取并添加 Token。`,
       autoFetchFail: '未能从浏览器读到 Token。',
-      autoFetchAbe: 'Chrome / Edge 127 及以上版本启用了 App-Bound 加密（cookie 前缀 v20），密钥由浏览器自身保管，其它程序无法读取——这是浏览器为防 cookie 窃取而设计的，无法绕过。请改用下方的手动方式。',
-      autoFetchNoLogin: '没有在浏览器里找到 DeepSeek 的登录态。请先在浏览器登录 chat.deepseek.com，或用下方手动方式。',
+      autoFetchAbeTitle: '无法自动读取：浏览器启用了 App-Bound 加密',
+      autoFetchAbe: 'Chrome / Edge 127 及以上版本启用了 App-Bound 加密（cookie 前缀 v20），密钥由浏览器以自身身份向系统服务申请，其它程序（包括本插件）即使同一 Windows 用户也读不到——这是浏览器为防 cookie 窃取而专门设计的，无法绕过。即使你在浏览器里登录了 DeepSeek，这里依然读不出来。请使用下方的手动方式。',
+      autoFetchNoLoginTitle: '没有在浏览器里找到 DeepSeek 的登录态',
+      autoFetchNoLogin: '请先在浏览器登录 chat.deepseek.com 后重试；若浏览器版本较新，可能同时受 App-Bound 加密限制。手动方式始终可用（见下方「如何获取 Token」）。',
     };
 
     /**
@@ -392,7 +394,14 @@ window.__ModuleLoader__.load({
             setAutoResult({ kind: 'ok', text: text.autoFetchOk(value.browser) });
             setState({ ...(state || {}), credentials: value.credentials });
           } else {
-            setAutoResult({ kind: 'fail', text: text.autoFetchFail });
+            // 按后端给出的原因分流：浏览器启用 ABE 时，去登录也没用，
+            // 必须直接说清楚，否则用户会白跑一趟。
+            const abe = value?.reason === 'encrypted-by-browser';
+            setAutoResult({
+              kind: 'fail',
+              reason: abe ? 'abe' : 'not-found',
+              text: abe ? text.autoFetchAbeTitle : text.autoFetchNoLoginTitle,
+            });
           }
           await load();
         } catch (err) {
@@ -524,12 +533,10 @@ window.__ModuleLoader__.load({
               key: 'r',
               className: `dwo-notice${autoResult.kind === 'ok' ? '' : ' dwo-notice-warn'}`,
             }, autoResult.text),
-            // 自动获取失败时补一句"为什么"，避免用户反复重试同一个按钮。
+            // 失败时只显示与本次原因对应的那一段，避免两种说法互相干扰。
             autoResult.kind === 'fail'
-              ? h('p', { key: 'abe', className: 'dwo-hint' }, text.autoFetchAbe)
-              : null,
-            autoResult.kind === 'fail'
-              ? h('p', { key: 'nl', className: 'dwo-hint' }, text.autoFetchNoLogin)
+              ? h('p', { key: 'why', className: 'dwo-hint' },
+                autoResult.reason === 'abe' ? text.autoFetchAbe : text.autoFetchNoLogin)
               : null,
           ])
           : null,

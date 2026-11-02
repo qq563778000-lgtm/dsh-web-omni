@@ -59,3 +59,18 @@ test('成功时返回的 token 不含空白字符', () => {
   assert.ok(result.token.length >= 20);
   assert.ok(!/\s/.test(result.token), 'token 里不应有空白');
 });
+
+test('浏览器启用 App-Bound 加密时，reason 必须是 encrypted-by-browser', () => {
+  const result = findBrowserToken();
+  if (result.ok) return;    // 真读到了就不用检查失败原因
+
+  // 本机 Chrome/Edge 156 全部使用 v20 + ABE。若这里拿到的是
+  // '未找到登录态'，说明判定逻辑退化成了"只在找到 cookie 时才判 ABE"——
+  // 那样用户没登录时会被引导去登录，登录完仍然失败，白跑一趟。
+  const abeBrowsers = result.tried.filter(entry => entry.reason === 'encrypted-by-browser');
+  if (abeBrowsers.length > 0) {
+    assert.equal(result.reason, 'encrypted-by-browser',
+      '整体结果也要标成加密限制，设置页据此给出正确提示');
+    assert.ok(result.browser, '应指出是哪个浏览器');
+  }
+});
