@@ -30,7 +30,7 @@ window.__ModuleLoader__.load({
     const STATUS_PATH = '/api/dsh-web-omni/status';
     const CREDENTIALS_PATH = '/api/dsh-web-omni/credentials';
     const TEST_PATH = '/api/dsh-web-omni/test';
-    const MODE_PATH = '/api/dsh-web-omni/mode';
+    const SETTINGS_PATH = '/api/dsh-web-omni/settings';
     const BROWSER_TOKEN_PATH = '/api/dsh-web-omni/browser-token';
 
     const text = {
@@ -58,10 +58,15 @@ window.__ModuleLoader__.load({
       helpFallback: '若命令提示找不到，请在 Network 面板里任选一个 api 请求，复制请求头 Authorization 中 Bearer 之后的字符。',
       helpPrivacy: 'Token 等同于账号登录态，只保存在本机，不要分享给他人。',
       modeTitle: '对话模式',
-      modeAgent: 'Agent（可调用工具）',
-      modeAgentDesc: '模型可以读写文件、执行命令、检索资料，完成多步任务。',
-      modeAsk: 'Ask（纯对话）',
-      modeAskDesc: '只做问答，不向上游声明任何工具，模型不会发起工具调用。',
+      modeHint: '决定发给上游的内容',
+      modeAgent: 'Agent',
+      modeAgentDesc: '系统提示 + 全部工具，可读写文件、执行命令。',
+      modeAsk: 'Ask',
+      modeAskDesc: '原生对话，只发你说的话，不带任何提示与注入。',
+      affinityTitle: '会话亲和',
+      affinityDesc: '同一对话复用上游会话，只发增量、不重复发送历史，更长会话更省更快。',
+      affinityOnDesc: '同一对话复用上游会话，只发增量内容。',
+      affinityOffDesc: '每轮重发完整历史，最兼容但输入成本更高。',
       autoFetch: '从浏览器获取',
       autoFetching: '正在读取…',
       autoFetchOk: (browser) => `已从 ${browser} 读取并添加 Token。`,
@@ -171,20 +176,61 @@ window.__ModuleLoader__.load({
   background:var(--dsw-alias-bg-base,#fff);border-radius:var(--dsw-radius-md,8px)}
 .dwo-hint{margin:0;font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
 
-.dwo-mode{display:grid;gap:8px}
-.dwo-mode-head{display:flex;align-items:baseline;gap:8px}
-.dwo-mode-label{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#6b6b6b)}
-.dwo-seg{display:flex;gap:0;border:1px solid var(--dsw-alias-border-l4,rgba(127,127,127,.25));
-  border-radius:var(--dsw-radius-md,8px);overflow:hidden;background:var(--dsw-alias-bg-layer-1,transparent)}
-.dwo-seg-btn{flex:1;height:34px;padding:0 12px;font:inherit;font-size:12px;cursor:pointer;
-  border:none;background:transparent;color:var(--dsw-alias-label-secondary,#6b6b6b);
-  transition:background .12s ease,color .12s ease}
-.dwo-seg-btn+.dwo-seg-btn{border-left:1px solid var(--dsw-alias-border-l4,rgba(127,127,127,.25))}
-.dwo-seg-btn:hover:not(:disabled):not(.dwo-seg-on){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08))}
-.dwo-seg-btn.dwo-seg-on{background:var(--dsw-alias-label-primary,#1f1e1d);color:var(--dsw-alias-bg-base,#fff);cursor:default}
-.dwo-seg-btn:disabled{opacity:.5;cursor:default}
-.dwo-seg-btn:focus-visible{outline:2px solid var(--dsw-alias-label-primary,#1f1e1d);outline-offset:-2px}
-.dwo-mode-desc{margin:0;font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
+/* 设置项容器：标题 + 可选说明 */
+.dwo-field{display:grid;gap:8px}
+.dwo-field-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.dwo-field-label{font-size:12px;line-height:18px;font-weight:500;
+  color:var(--dsw-alias-label-secondary,#6b6b6b)}
+.dwo-field-hint{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
+
+/* 单选卡片：选中靠左侧色条 + 圆点双重标识，色弱也能分辨 */
+.dwo-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;
+  align-items:stretch}
+.dwo-card{position:relative;display:flex;gap:10px;align-items:flex-start;text-align:left;
+  padding:12px 14px;box-sizing:border-box;font:inherit;cursor:pointer;
+  border:1px solid var(--dsw-alias-border-l4,rgba(127,127,127,.22));
+  border-radius:calc(var(--dsw-radius-md,8px) + 2px);
+  background:var(--dsw-alias-bg-layer-1,transparent);
+  transition:border-color .15s ease,background .15s ease,box-shadow .15s ease}
+.dwo-card:hover:not(:disabled):not(.dwo-card-on){
+  background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.06))}
+.dwo-card:focus-visible{outline:2px solid var(--dsw-alias-label-primary,#1f1e1d);outline-offset:2px}
+.dwo-card:disabled{opacity:.55;cursor:default}
+.dwo-card-on{border-color:var(--dsw-alias-label-primary,#1f1e1d);
+  background:color-mix(in srgb,var(--dsw-alias-label-primary,#1f1e1d) 5%,transparent);
+  box-shadow:inset 3px 0 0 var(--dsw-alias-label-primary,#1f1e1d)}
+.dwo-card-dot{flex:none;width:14px;height:14px;margin-top:2px;box-sizing:border-box;
+  border:1.5px solid var(--dsw-alias-border-l4,rgba(127,127,127,.5));border-radius:50%;
+  transition:border-color .15s ease,box-shadow .15s ease}
+.dwo-card-on .dwo-card-dot{border-color:var(--dsw-alias-label-primary,#1f1e1d);
+  box-shadow:inset 0 0 0 3px var(--dsw-alias-label-primary,#1f1e1d)}
+.dwo-card-body{display:grid;gap:3px;min-width:0}
+.dwo-card-title{font-size:13px;line-height:18px;font-weight:600;
+  color:var(--dsw-alias-label-primary,#1f1e1d)}
+.dwo-card-desc{font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
+
+/* 开关行：整行可点，右侧滑动开关 */
+.dwo-toggle{display:flex;align-items:center;gap:12px;width:100%;text-align:left;
+  padding:12px 14px;box-sizing:border-box;font:inherit;cursor:pointer;
+  border:1px solid var(--dsw-alias-border-l4,rgba(127,127,127,.22));
+  border-radius:calc(var(--dsw-radius-md,8px) + 2px);
+  background:var(--dsw-alias-bg-layer-1,transparent);
+  transition:background .15s ease,border-color .15s ease}
+.dwo-toggle:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.06))}
+.dwo-toggle:focus-visible{outline:2px solid var(--dsw-alias-label-primary,#1f1e1d);outline-offset:2px}
+.dwo-toggle:disabled{opacity:.55;cursor:default}
+.dwo-toggle-body{display:grid;gap:3px;flex:1;min-width:0}
+.dwo-toggle-title{font-size:13px;line-height:18px;font-weight:600;
+  color:var(--dsw-alias-label-primary,#1f1e1d)}
+.dwo-toggle-desc{font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
+.dwo-switch{flex:none;position:relative;width:36px;height:20px;border-radius:999px;
+  background:color-mix(in srgb,var(--dsw-alias-label-primary,#1f1e1d) 18%,transparent);
+  transition:background .18s ease}
+.dwo-toggle-on .dwo-switch{background:var(--dsw-alias-label-primary,#1f1e1d)}
+.dwo-switch-knob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
+  background:var(--dsw-alias-bg-base,#fff);box-shadow:0 1px 2px rgba(0,0,0,.18);
+  transition:transform .18s cubic-bezier(.2,.8,.3,1)}
+.dwo-toggle-on .dwo-switch-knob{transform:translateX(16px)}
 
 .dwo-test{list-style:none;margin:0;padding:0;display:grid;gap:4px;font-size:12px;
   color:var(--dsw-alias-label-secondary,#6b6b6b)}
@@ -277,31 +323,56 @@ window.__ModuleLoader__.load({
      * 切换后立刻生效：适配器每次请求都会重读配置，不需要重启 DSH。
      * 因此这里不做"保存"按钮，点哪个就是哪个。
      */
-    function ModeSwitch({ mode, busy, onChange }) {
-      const options = [
-        { id: 'agent', label: text.modeAgent, desc: text.modeAgentDesc },
-        { id: 'ask', label: text.modeAsk, desc: text.modeAskDesc },
-      ];
-      const current = options.find(option => option.id === mode) || options[0];
-
-      return h('div', { className: 'dwo-mode' }, [
-        h('div', { key: 'head', className: 'dwo-mode-head' }, [
-          h('span', { key: 'l', className: 'dwo-mode-label' }, text.modeTitle),
+    /**
+     * 单选卡片组：模式、亲和共用同一套视觉。
+     *
+     * 相比原来的分段按钮，卡片式的好处是能把每个选项的**效果**写在旁边——
+     * "agent 和 ask 到底有什么区别"正是用户最容易误解的地方，只给两个词
+     * 不够。选中态用左侧色条 + 勾选圆点双重标识，色弱用户也能分辨。
+     */
+    function RadioCards({ label, hint, value, options, busy, onChange }) {
+      return h('div', { className: 'dwo-field' }, [
+        h('div', { key: 'h', className: 'dwo-field-head' }, [
+          h('span', { key: 'l', className: 'dwo-field-label' }, label),
+          hint ? h('span', { key: 'i', className: 'dwo-field-hint' }, hint) : null,
         ]),
-        h('div', {
-          key: 'seg',
-          className: 'dwo-seg',
-          role: 'group',
-          'aria-label': text.modeTitle,
-        }, options.map(option => h('button', {
-          key: option.id,
-          type: 'button',
-          className: `dwo-seg-btn${option.id === current.id ? ' dwo-seg-on' : ''}`,
-          onClick: () => { if (option.id !== current.id) onChange(option.id); },
-          disabled: busy,
-          'aria-pressed': option.id === current.id,
-        }, option.label))),
-        h('p', { key: 'd', className: 'dwo-mode-desc' }, current.desc),
+        h('div', { key: 'g', className: 'dwo-cards', role: 'radiogroup', 'aria-label': label },
+          options.map(option => {
+            const on = option.id === value;
+            return h('button', {
+              key: option.id,
+              type: 'button',
+              role: 'radio',
+              'aria-checked': on,
+              className: `dwo-card${on ? ' dwo-card-on' : ''}`,
+              onClick: () => { if (!on) onChange(option.id); },
+              disabled: busy,
+            }, [
+              h('span', { key: 'dot', className: 'dwo-card-dot' }),
+              h('span', { key: 'body', className: 'dwo-card-body' }, [
+                h('span', { key: 't', className: 'dwo-card-title' }, option.title),
+                h('span', { key: 'd', className: 'dwo-card-desc' }, option.desc),
+              ]),
+            ]);
+          })),
+      ]);
+    }
+
+    /** 模型选择器开关：本质是 checkbox + 一段说明，不与单选组混用。 */
+    function ToggleRow({ label, desc, checked, busy, onChange }) {
+      return h('button', {
+        type: 'button',
+        className: `dwo-toggle${checked ? ' dwo-toggle-on' : ''}`,
+        role: 'switch',
+        'aria-checked': checked,
+        onClick: () => onChange(!checked),
+        disabled: busy,
+      }, [
+        h('span', { key: 'b', className: 'dwo-toggle-body' }, [
+          h('span', { key: 't', className: 'dwo-toggle-title' }, label),
+          h('span', { key: 'd', className: 'dwo-toggle-desc' }, desc),
+        ]),
+        h('span', { key: 's', className: 'dwo-switch' }, h('span', { className: 'dwo-switch-knob' })),
       ]);
     }
 
@@ -313,6 +384,7 @@ window.__ModuleLoader__.load({
       const [testResult, setTestResult] = useState(null);
       const [token, setToken] = useState('');
       const [mode, setMode] = useState('agent');
+      const [affinity, setAffinity] = useState(true);
       const [autoBusy, setAutoBusy] = useState(false);
       const [autoResult, setAutoResult] = useState(null);
 
@@ -320,7 +392,9 @@ window.__ModuleLoader__.load({
         try {
           const value = await request(STATUS_PATH);
           setState(value);
-          if (value?.mode === 'ask' || value?.mode === 'agent') setMode(value.mode);
+          const settings = value?.settings || {};
+          if (settings.mode === 'ask' || settings.mode === 'agent') setMode(settings.mode);
+          if (typeof settings.affinity === 'boolean') setAffinity(settings.affinity);
           setError(null);
         } catch (err) {
           setError(String(err.message || err));
@@ -329,16 +403,32 @@ window.__ModuleLoader__.load({
 
       useEffect(() => { load(); }, [load]);
 
-      const changeMode = async (next) => {
-        const previous = mode;
-        setMode(next);          // 乐观更新：切换是本地状态，失败再回滚
+      /**
+       * 提交一个运行时开关。
+       *
+       * 乐观更新：先改本地状态让界面立刻响应，失败再回滚。开关是本地布尔值，
+       * 等网络往返会让点击有明显延迟感。
+       */
+      const patchSettings = async (patch, rollback) => {
         setError(null);
         try {
-          await request(MODE_PATH, { method: 'POST', body: JSON.stringify({ mode: next }) });
+          await request(SETTINGS_PATH, { method: 'POST', body: JSON.stringify(patch) });
         } catch (err) {
-          setMode(previous);
+          rollback();
           setError(String(err.message || err));
         }
+      };
+
+      const changeMode = (next) => {
+        const previous = mode;
+        setMode(next);
+        patchSettings({ mode: next }, () => setMode(previous));
+      };
+
+      const changeAffinity = (next) => {
+        const previous = affinity;
+        setAffinity(next);
+        patchSettings({ affinity: next }, () => setAffinity(previous));
       };
 
       const submit = async () => {
@@ -495,11 +585,26 @@ window.__ModuleLoader__.load({
 
         ...notices,
 
-        h(ModeSwitch, {
+        h(RadioCards, {
           key: 'mode',
-          mode,
+          label: text.modeTitle,
+          hint: text.modeHint,
+          value: mode,
           busy,
           onChange: changeMode,
+          options: [
+            { id: 'agent', title: text.modeAgent, desc: text.modeAgentDesc },
+            { id: 'ask', title: text.modeAsk, desc: text.modeAskDesc },
+          ],
+        }),
+
+        h(ToggleRow, {
+          key: 'affinity',
+          label: text.affinityTitle,
+          desc: affinity ? text.affinityOnDesc : text.affinityOffDesc,
+          checked: affinity,
+          busy,
+          onChange: changeAffinity,
         }),
 
         credentials.items.length === 0

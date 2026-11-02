@@ -57,6 +57,37 @@ const BODY = `
 
   <p class="dwo-notice">凭据池尚未就绪，首次对话时会自动初始化。</p>
 
+  <div class="dwo-field">
+    <div class="dwo-field-head">
+      <span class="dwo-field-label">对话模式</span>
+      <span class="dwo-field-hint">决定发给上游的内容</span>
+    </div>
+    <div class="dwo-cards" role="radiogroup">
+      <button class="dwo-card dwo-card-on" role="radio" aria-checked="true">
+        <span class="dwo-card-dot"></span>
+        <span class="dwo-card-body">
+          <span class="dwo-card-title">Agent</span>
+          <span class="dwo-card-desc">系统提示 + 全部工具，可读写文件、执行命令。</span>
+        </span>
+      </button>
+      <button class="dwo-card" role="radio" aria-checked="false">
+        <span class="dwo-card-dot"></span>
+        <span class="dwo-card-body">
+          <span class="dwo-card-title">Ask</span>
+          <span class="dwo-card-desc">原生对话，只发你说的话，不带任何提示与注入。</span>
+        </span>
+      </button>
+    </div>
+  </div>
+
+  <button class="dwo-toggle dwo-toggle-on" role="switch" aria-checked="true">
+    <span class="dwo-toggle-body">
+      <span class="dwo-toggle-title">会话亲和</span>
+      <span class="dwo-toggle-desc">同一对话复用上游会话，只发增量内容。</span>
+    </span>
+    <span class="dwo-switch"><span class="dwo-switch-knob"></span></span>
+  </button>
+
   <ul class="dwo-list">
     <li class="dwo-row">
       <span class="dwo-label">+U7ZgprKcckU…</span>

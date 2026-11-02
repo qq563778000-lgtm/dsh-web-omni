@@ -1276,6 +1276,28 @@ export function buildPromptFromMessages(messages) {
   return buildPromptInner(messages, 0, messages.length);
 }
 
+/**
+ * 原生对话的 prompt：不带 `[User]: ` / `[Assistant]: ` 这类角色前缀。
+ *
+ * ask 模式的要求是"只把用户对话发给上游"，而 `buildPromptFromMessages`
+ * 会为每条消息加上方括号角色标签——那本身就是一层注入。这里直接按顺序
+ * 拼接纯文本，多轮之间用空行分隔。
+ *
+ * assistant 的历史同样保留纯文本：那是真实对话内容，去掉它会让模型丢失
+ * 上下文，与"原生对话"的意图相悖。
+ */
+export function buildNativePrompt(messages) {
+  const parts = [];
+  for (const message of messages || []) {
+    const role = message?.role;
+    if (role !== 'user' && role !== 'assistant') continue;
+    const text = textFromContent(message.content);
+    if (!text || !text.trim()) continue;
+    parts.push(text.trim());
+  }
+  return parts.join('\n\n');
+}
+
 export function buildLatestPrompt(messages) {
   // 从最后一条 assistant 消息之后开始截取：并行工具调用的多条结果会被
   // toolify 拆成多条连续 user 消息，只取"最后一条 user"会丢掉前面的结果。

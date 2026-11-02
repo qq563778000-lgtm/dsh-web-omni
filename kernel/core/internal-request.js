@@ -131,6 +131,9 @@ export function createInternalRequest({
   conversation = {},
   raw = {},
   metadata = {},
+  // 原生对话：上游只收到消息原文，内核不拼任何提示词模板、不注入工具说明、
+  // 不追加触发信号。ask 模式用它实现"只把用户对话发给上游"。
+  nativePrompt = false,
 } = {}) {
   return {
     id: metadata.requestId || createInternalId('req'),
@@ -171,6 +174,7 @@ export function createInternalRequest({
       body: raw.body || {},
       rawJsonText: raw.rawJsonText || '',
     },
+    nativePrompt: nativePrompt === true,
     metadata,
   };
 }

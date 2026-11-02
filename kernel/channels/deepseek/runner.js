@@ -5,6 +5,7 @@ import { enqueueRequest, dispatchQueued } from '../../services/queue.js';
 import { getConversationBinding, getBoundTokenPrefix, getRecentToolCallIndex, getResponseToolCallIndex, invalidateConversation, resolveConversation, recordResponseMessageId } from '../../services/conversation.js';
 import {
   buildLatestPrompt,
+  buildNativePrompt,
   buildPromptFromMessages,
   latestDeltaStartIndex,
 } from '../../utils/response-utils.js';
@@ -256,6 +257,7 @@ export async function* runDeepSeek(internalRequest, context = {}) {
   }
   const promptPlan = compactPlan;
   const {
+    nativePrompt,
     promptInjectionDisabled,
     disabledPrompt,
     toolCallingEnabled,
@@ -270,7 +272,9 @@ export async function* runDeepSeek(internalRequest, context = {}) {
     ...getResponseToolCallIndex(internalRequest.conversation?.previousResponseId),
     ...getRecentToolCallIndex(toolResultIds),
   ]);
-  const promptMessages = promptInjectionDisabled
+  // 原生模式（ask）：不做 toolify 包装——那会把用户消息改写成带说明模板的
+  // 形态。直接把净化后的消息原样交给拼装函数。
+  const promptMessages = (promptInjectionDisabled || nativePrompt)
     ? openAIMessages
     : preprocessMessagesForToolify(openAIMessages, triggerSignal, previousToolCalls);
 
@@ -288,9 +292,13 @@ export async function* runDeepSeek(internalRequest, context = {}) {
     return '';
   })();
 
+  // 原生模式只拼对话本体，不附加工具说明（toolInstructions 在上游已为空，
+  // 这里再显式排除一层，避免将来 promptWithToolInstructions 内部加料）。
   const fullPrompt = promptInjectionDisabled
     ? disabledPrompt
-    : promptWithToolInstructions(promptMessages, toolInstructions);
+    : nativePrompt
+      ? buildNativePrompt(promptMessages)
+      : promptWithToolInstructions(promptMessages, toolInstructions);
 
   const binding = getConversationBinding(req, openAIMessages);
   const explicitConversationId = internalRequest.conversation?.id
@@ -317,9 +325,12 @@ export async function* runDeepSeek(internalRequest, context = {}) {
 
   // preprocessMessagesForToolify 逐条 1:1 映射，openAIMessages 的前缀匹配
   // 下标可以直接用于 promptMessages。
-  const deltaStart = promptInjectionDisabled ? null : latestDeltaStartIndex(promptMessages, matchedPrefixLength);
-  const latestPrompt = promptInjectionDisabled
-    ? fullPrompt
+  const deltaStart = (promptInjectionDisabled || nativePrompt)
+    ? null
+    : latestDeltaStartIndex(promptMessages, matchedPrefixLength);
+
+  const latestPrompt = (promptInjectionDisabled || nativePrompt)
+    ? (nativePrompt ? buildNativePrompt(promptMessages) : fullPrompt)
     : deltaStart != null
       ? promptWithToolInstructions(promptMessages.slice(deltaStart), toolInstructions)
       : latestPromptWithToolInstructions(promptMessages, toolInstructions);
@@ -339,9 +350,14 @@ export async function* runDeepSeek(internalRequest, context = {}) {
   // 因此不存在"续传轮里模型从未见过工具说明"的情形。
   const continuationPrompt = promptInjectionDisabled
     ? fullPrompt
-    : (deltaStart != null
-      ? promptWithToolInstructions(promptMessages.slice(deltaStart), '')
-      : latestPromptWithToolInstructions(promptMessages, ''));
+    : nativePrompt
+      // 原生模式续传：只发本轮新增的对话，不附任何说明
+      ? (deltaStart != null
+        ? buildNativePrompt(promptMessages.slice(deltaStart))
+        : buildNativePrompt(promptMessages))
+      : (deltaStart != null
+        ? promptWithToolInstructions(promptMessages.slice(deltaStart), '')
+        : latestPromptWithToolInstructions(promptMessages, ''));
 
   // 长上下文时自动关闭思考。
   //

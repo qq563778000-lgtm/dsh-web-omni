@@ -505,11 +505,36 @@ function isTitleGenerationRequest(req) {
 }
 
 export function createPromptPlan({ req, tools = [], toolChoice = 'auto', toolPresentation = null } = {}) {
+  // 原生对话（ask 模式）：直接发消息原文，不做任何提示词工程。
+  //
+  // 与下面的 promptInjectionDisabled 的区别：那条路径发的是**原始请求 JSON**
+  // （用于调试/旁路），而这里发的是 `[User]: …` 这样的干净对话文本。
+  // 两者都不能注入工具说明，但产物完全不同。
+  if (req?.nativePrompt === true) {
+    return {
+      nativePrompt: true,
+      // 原生模式仍需 buildPromptFromMessages 拼出 `[User]: …`，
+      // 只是不附加任何说明文本。用 nativePrompt 而非 disabledPrompt
+      // 区分：后者发的是原始请求 JSON。
+      promptInjectionDisabled: false,
+      disabledPrompt: null,
+      tools: [],
+      toolChoice: 'none',
+      toolCallingEnabled: false,
+      triggerSignal: null,
+      toolInstructions: '',
+      parseToolCalls: () => null,
+      parseToolCallsDetailed: () => ({ toolCalls: null, failureType: 'no_fc', errorDetails: 'Native prompt mode has no tool capability' }),
+      createStreamDetector: () => null,
+    };
+  }
+
   const promptInjectionDisabled = isPromptInjectionDisabledForRequest(req);
   const isTitleGen = !promptInjectionDisabled && isTitleGenerationRequest(req);
   if (promptInjectionDisabled || isTitleGen) {
     const disabledPrompt = promptInjectionDisabled ? getRawJsonPromptForRequest(req) : null;
     return {
+      nativePrompt: false,
       promptInjectionDisabled: promptInjectionDisabled || isTitleGen,
       disabledPrompt,
       tools: [],
@@ -547,6 +572,7 @@ export function createPromptPlan({ req, tools = [], toolChoice = 'auto', toolPre
   };
 
   return {
+    nativePrompt: false,
     promptInjectionDisabled: false,
     disabledPrompt: null,
     tools: normalizedTools,
