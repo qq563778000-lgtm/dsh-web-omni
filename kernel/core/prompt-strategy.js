@@ -1549,6 +1549,54 @@ function parseDsmlParameters(body) {
   return args;
 }
 
+/**
+ * 找到 DSML `calls` 块的结束位置。
+ *
+ * 模型的 DSML 输出**并不总是自洽**：外层用上游原生的 `<｜｜DSML｜｜ calls>`，
+ * 内层却退回本项目的 `<function_call>` / `</function_calls>`。2026-11-02
+ * 实机样本（会话 session-36f30075，step 7）正是这种混合形态：
+ *
+ *   <｜｜DSML｜｜ calls>
+ *     <function_call>
+ *       <tool>skill</tool>
+ *       <args_json><![CDATA[{"name":"web-access"}]]></args_json>
+ *     </function_call>
+ *   </function_calls>
+ *
+ * 只认 DSML 形态的闭合标签时，这里永远找不到结束位置，于是返回
+ * `truncated`；检测器据此判定"还在续传"持续缓冲，直到流结束仍不闭合，
+ * 最终把整段标记当作正文发出去 —— 用户看到的就是那堆尖括号。
+ *
+ * 因此闭合标签要**两种形态都接受**：DSML 原生闭合，或标准
+ * `</function_calls>`。取两者中更早出现的那个。
+ */
+function findDsmlCallsClose(source) {
+  const dsmlCloseRx = dsmlTagPattern('calls', { closing: true });
+  const dsmlClose = dsmlCloseRx.exec(source);
+
+  const stdCloseRx = /<\/function_calls\s*>/i;
+  const stdClose = stdCloseRx.exec(source);
+
+  // 两处闭合都在时取更早的那个：谁先结束，块就在谁那里收口。
+  if (dsmlClose && stdClose) return dsmlClose.index <= stdClose.index ? dsmlClose : stdClose;
+  if (dsmlClose) return dsmlClose;
+
+  // 只有标准闭合标签时，必须确认它确实在给这个 DSML 块收尾。
+  //
+  // 否则会误伤"DSML 块仍在续传、但缓冲区后面恰好出现一段无关的
+  // </function_calls>"的情形：那会让块提前收口，把半截 invoke 当成
+  // 完整调用解析出来，工具参数残缺却照样被执行。
+  //
+  // 判据：到该闭合标签为止，`<function_call>` 与 `</function_call>` 必须
+  // 成对（内层全部闭合）。不成对说明还在流式传输中途，按未闭合处理，
+  // 让检测器继续缓冲。
+  if (!stdClose) return null;
+  const inner = source.slice(0, stdClose.index);
+  const openCount = (inner.match(/<function_call\b[^>]*>/gi) || []).length;
+  const closeCount = (inner.match(/<\/function_call\s*>/gi) || []).length;
+  return openCount > 0 && openCount === closeCount ? stdClose : null;
+}
+
 function parseDsmlToolCalls(text, { tools = [], toolChoice = 'auto' } = {}) {
   const src = String(text || '');
   const openRx = dsmlTagPattern('calls');
@@ -1556,8 +1604,7 @@ function parseDsmlToolCalls(text, { tools = [], toolChoice = 'auto' } = {}) {
   if (!open) return null;
 
   const afterOpen = src.slice(open.index + open[0].length);
-  const closeRx = dsmlTagPattern('calls', { closing: true });
-  const close = closeRx.exec(afterOpen);
+  const close = findDsmlCallsClose(afterOpen);
 
   const prefix = src.slice(0, open.index).trimEnd();
   if (!close) {
@@ -1570,9 +1617,17 @@ function parseDsmlToolCalls(text, { tools = [], toolChoice = 'auto' } = {}) {
   }
   const inner = afterOpen.slice(0, close.index);
 
+  // 一个 DSML 块里可能混用两种内层写法，因此两边都要扫，再按出现位置合并。
+  //
+  // 内层退回本项目协议（`<function_call><tool>…</tool><args_json>…`）是实测
+  // 出现过的形态（见 findDsmlCallsClose 的样本）。只扫 invoke 会把它整块
+  // 漏掉；只在内层无 invoke 时才回退，又会漏掉"两种写法并存"的批次——
+  // 那样解析出的调用数比模型实际发出的少，静默丢调用比报错更难查。
+  const withPosition = [];
+  let seq = 0;
+
   const invokeRx = dsmlTagPattern('invoke');
   const invokeCloseRx = dsmlTagPattern('invoke', { closing: true });
-  const parsedTools = [];
   let im;
   while ((im = invokeRx.exec(inner)) !== null) {
     const name = dsmlAttr(im[1], 'name');
@@ -1581,13 +1636,36 @@ function parseDsmlToolCalls(text, { tools = [], toolChoice = 'auto' } = {}) {
     const ic = invokeCloseRx.exec(inner);
     const bodyEnd = ic ? ic.index : inner.length;
     if (name) {
-      parsedTools.push({
+      withPosition.push({
+        at: im.index,
+        order: seq++,
         name: resolveToolName(name, tools),
         args: parseDsmlParameters(inner.slice(bodyStart, bodyEnd)),
       });
     }
     invokeRx.lastIndex = ic ? ic.index + ic[0].length : inner.length;
   }
+
+  const stdCallRx = /<function_call\b[^>]*>/gi;
+  let cm;
+  while ((cm = stdCallRx.exec(inner)) !== null) {
+    const bodyStart = cm.index + cm[0].length;
+    const close = findClosingTag(inner, 'function_call', bodyStart, ['args_json']);
+    const bodyEnd = close ? close.start : inner.length;
+    const block = inner.slice(bodyStart, bodyEnd);
+    const rawName = decodeXmlEntities(extractTagBody(block, 'tool') || '').trim();
+    const args = rawName ? parseArgsJson(extractTagBody(block, 'args_json')) : null;
+    if (rawName && args != null) {
+      withPosition.push({ at: cm.index, order: seq++, name: resolveToolName(rawName, tools), args });
+    }
+    stdCallRx.lastIndex = close ? close.end : inner.length;
+  }
+
+  // 排序后剥掉定位用的临时字段：`parsedTools` 会随 schema_error 一起返回，
+  // 留着这些字段会让下游看到一个和其它解析路径结构不同的对象。
+  const parsedTools = withPosition
+    .sort((a, b) => (a.at - b.at) || (a.order - b.order))
+    .map(({ at: _at, order: _order, ...tool }) => tool);
   if (!parsedTools.length) return null;
 
   applyParameterAliases(parsedTools, tools);
