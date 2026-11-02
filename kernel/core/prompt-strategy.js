@@ -637,6 +637,53 @@ function extractSequentialTagBlocks(text, tag, skipTags = []) {
   return blocks;
 }
 
+/**
+ * 触发信号的大小写不敏感匹配。
+ *
+ * 模型经常把 `<Function_Start/>` 写成 `<function_Start/>`（只差 F/f 一个
+ * 字母）。严格 `startsWith` 会判为"没有触发信号"，于是这半截标记被当成
+ * 正文推给客户端，同时也让解析器走不到工具调用分支。
+ *
+ * 2026-11-02 实机样本（session-7085899a，step 7）：整条正文就是
+ * `"\n\n<function_Start/>\n"`，工具调用却能解析出来——说明走的是
+ * 流式检测器没拦住、事后 late recovery 才救回的分支，信号因此留下了。
+ *
+ * 协议里的信号本身不含需要区分的语义，统一按不区分大小写处理。
+ */
+function triggerSignalAt(text, index, triggerSignal) {
+  if (!triggerSignal) return false;
+  // 在自闭合斜杠前允许出现空白：`<Function_Start />` 与 `<Function_Start/>`
+  // 是同一个信号，模型两种都会写。
+  const pattern = triggerSignalPattern(triggerSignal);
+  pattern.lastIndex = index;
+  const match = pattern.exec(text);
+  // 必须恰好从 index 开始，且不能命中更靠后的位置。
+  return Boolean(match) && match.index === index;
+}
+
+/** 由触发信号字面量构造"允许斜杠前有空白、不区分大小写"的匹配器。 */
+function triggerSignalPattern(triggerSignal) {
+  // 先整体转义，再把结尾的 `/>` 放宽成 `\s*/>`（允许斜杠前有空白）。
+  //
+  // 注意 `/` 不在转义字符集里（它在 RegExp 构造器的字符串中是普通字符），
+  // 所以比较时要按**未转义**的 `/>` 判断，而不是 `\/>`——后者永远不成立，
+  // 会让 `<Function_Start />` 静默退回严格匹配、继续泄漏到正文。
+  const escaped = String(triggerSignal).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const relaxed = escaped.endsWith('/>')
+    ? `${escaped.slice(0, -2)}\\s*\\/>`
+    : escaped;
+  return new RegExp(relaxed, 'gi');
+}
+
+/** 匹配出的信号实际长度，供调用方推进游标。 */
+function triggerSignalMatchLength(text, index, triggerSignal) {
+  const pattern = triggerSignalPattern(triggerSignal);
+  pattern.lastIndex = index;
+  const match = pattern.exec(text);
+  if (!match || match.index !== index) return 0;
+  return match[0].length;
+}
+
 function findTriggerSignalsOutsideThink(text, triggerSignal) {
   if (!text || !triggerSignal) return [];
   const positions = [];
@@ -670,9 +717,11 @@ function findTriggerSignalsOutsideThink(text, triggerSignal) {
       i = thinkClose.end - 1;
       continue;
     }
-    if (thinkDepth === 0 && text.startsWith(triggerSignal, i)) {
+    if (thinkDepth === 0 && triggerSignalAt(text, i, triggerSignal)) {
       positions.push(i);
-      i += triggerSignal.length - 1;
+      // 用实际匹配长度推进：`<Function_Start />` 比字面量多一个空格，
+      // 按字面量长度推进会漏掉斜杠。
+      i += (triggerSignalMatchLength(text, i, triggerSignal) || triggerSignal.length) - 1;
     }
   }
   return positions;
@@ -686,7 +735,8 @@ export function findLastTriggerSignalOutsideThink(text, triggerSignal) {
 function findProtocolTriggerSignal(text, triggerSignal) {
   const positions = findTriggerSignalsOutsideThink(text, triggerSignal);
   for (let i = positions.length - 1; i >= 0; i--) {
-    const afterSignal = text.slice(positions[i] + triggerSignal.length).replace(/^\s*/, '');
+    const matched = triggerSignalMatchLength(text, positions[i], triggerSignal) || triggerSignal.length;
+    const afterSignal = text.slice(positions[i] + matched).replace(/^\s*/, '');
     if (tagOpenAt(afterSignal, 0, 'function_calls')) return positions[i];
   }
   return positions.length ? positions[positions.length - 1] : -1;
@@ -1874,7 +1924,9 @@ export function parseXmlToolCallsDetailed(rawText, { triggerSignal, tools = [], 
   }
 
   const prefix = text.slice(0, signalPos).trimEnd();
-  const signalEnd = signalPos + triggerSignal.length;
+  // 信号实际长度可能与字面量不同（`<Function_Start />` 多一个空白），
+  // 按字面量切片会把斜杠留在块前，导致 <function_calls> 定位失败。
+  const signalEnd = signalPos + (triggerSignalMatchLength(text, signalPos, triggerSignal) || triggerSignal.length);
   const leadingWs = text.slice(signalEnd).match(/^\s*/)?.[0]?.length || 0;
   return parseFunctionCallsBlockAt(text, {
     blockStart: signalEnd + leadingWs,
@@ -2193,9 +2245,46 @@ function isPartialBracketPseudoAtEnd(text) {
   return /^\[(?:调(?:用(?:工(?:具)?)?)?|使(?:用(?:工(?:具)?)?)?|C(?:a(?:l(?:l)?)?)?|T(?:o(?:o(?:l)?)?)?|U(?:s(?:e)?)?)(?:\s+[A-Za-z_][A-Za-z0-9_.-]*)?(?:\]?[ \t]*)?$/i.test(rest);
 }
 
+/**
+ * `rest` 是否是触发信号的"尚未写完"前缀。
+ *
+ * 只把结尾的结构性部分放宽：`<Function_Start/>` 允许在 `/` 前出现任意空白，
+ * 所以 `<Function_Start /`、`<Function_Start  ` 都应视为待续。
+ * 已经完整匹配（长度达到或超过信号）时返回 false，交给正常流程处理。
+ */
+function isSignalPrefix(pattern, rest) {
+  const sig = String(pattern);
+  const text = String(rest);
+  if (!text || text.length > sig.length + 8) return false;
+
+  // 逐字符比较，遇到空白段时允许它出现在结尾或紧跟 `/` 之前。
+  let i = 0;
+  let j = 0;
+  while (i < text.length) {
+    if (j >= sig.length) return false;   // 已超出信号本体，不可能是前缀
+    const tc = text[i];
+    const sc = sig[j];
+
+    if (sc === '/') {
+      // 信号里的 `/`：允许被任意空白"推迟"到达。
+      if (/\s/.test(tc)) { i += 1; continue; }
+    }
+    if (tc.toLowerCase() !== sc.toLowerCase()) return false;
+    i += 1;
+    j += 1;
+  }
+  return true;
+}
+
 function isPartialPatternAtEnd(buffer, index, patterns) {
   const rest = buffer.slice(index);
-  if (patterns.some(pattern => rest.length < pattern.length && pattern.startsWith(rest))) return true;
+  // 尾部的半截信号必须判"待续"：分片把 `<Function_Start/>` 切开时，若这里
+  // 判否，那几个字符会先被当成正文推出去，等下一片补齐也无法撤回。
+  //
+  // 不能用普通的"前缀比较"：`<Function_Start /` 多了一个空白，按字面量
+  // 前缀不成立；也不区分大小写，因为模型会写 `<function_Start`。
+  // isSignalPrefix 逐字符比较并允许斜杠前出现任意空白，两个问题一起覆盖。
+  if (patterns.some(pattern => isSignalPrefix(pattern, rest))) return true;
   if (isPartialBracketPseudoAtEnd(rest)) return true;
   const lower = rest.toLowerCase();
   if ('<think'.startsWith(lower) || '</think'.startsWith(lower)) return true;
@@ -2263,8 +2352,8 @@ export function createXmlToolCallDetector({ triggerSignal, parseToolCalls, parse
       if (detailed?.failureType === 'no_fc') return base;
       // 信号模式下缓冲区以触发信号开头；裸块兜底模式下直接以 <function_calls 开头，
       // 此时用整个缓冲区判断"块是否仍在续传"，避免语法错误被永久缓冲。
-      const afterTrigger = triggerSignal && toolBuffer.startsWith(triggerSignal)
-        ? toolBuffer.slice(triggerSignal.length)
+      const afterTrigger = triggerSignal && triggerSignalAt(toolBuffer, 0, triggerSignal)
+        ? toolBuffer.slice(triggerSignalMatchLength(toolBuffer, 0, triggerSignal) || triggerSignal.length)
         : toolBuffer;
       const afterTriggerTrimmed = afterTrigger.trimStart();
       const afterTriggerLower = afterTriggerTrimmed.toLowerCase();
@@ -2319,7 +2408,7 @@ export function createXmlToolCallDetector({ triggerSignal, parseToolCalls, parse
           continue;
         }
 
-        if (thinkDepth === 0 && triggerSignal && remaining.startsWith(triggerSignal)) {
+        if (thinkDepth === 0 && triggerSignalAt(scanBuffer, i, triggerSignal)) {
           state = 'tool_parsing';
           toolBuffer = scanBuffer.slice(i);
           scanBuffer = '';

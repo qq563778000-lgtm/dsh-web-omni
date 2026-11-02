@@ -62,6 +62,20 @@ export function isInvalidChatSessionError(code, message) {
   return String(code) === '0' && /invalid chat session id/i.test(String(message || ''));
 }
 
+/**
+ * 判定"上游上一条回复还没收尾"的两个业务码。
+ *
+ *   biz_code=11  message still wip        —— 上一条还在生成
+ *   biz_code=26  invalid message id       —— 上一条尚未落库，id 还不认
+ *
+ * 二者都不是凭据问题，等一会儿在同会话重发即可恢复；换凭据只会丢掉
+ * 整段上下文。2026-11-02 实机故障的直接表现就是 biz_code=11。
+ */
+export function isUpstreamNotSettledError(json) {
+  const code = json?.data?.biz_code;
+  return code === 11 || code === 26;
+}
+
 async function invalidateTokenRuntimeState(token) {
   const tokenPrefix = token.slice(0, 12);
   invalidateTokenSessions(tokenPrefix);
@@ -148,6 +162,30 @@ async function throwDeepSeekErrorFromJson(json, slot) {
     err.credentialFailover = true;
     throw err;
   }
+  // 上游「上一条回复还没收尾」的两个业务码。
+  //
+  // 真实故障（2026-11-02 DSH）：上一步检测到工具调用就掐断了上游流，
+  // 那条回复永远没有 FINISHED，上游把它判为 wip；下一步立刻续传被拒：
+  //     {"code":0,"data":{"biz_code":11,"biz_msg":"message still wip"}}
+  // 等待后重试同一 parent 时又会先撞到 biz_code=26 invalid message id。
+  //
+  // 这两者都不是凭据问题，换凭据（新会话）只会丢掉整段上下文。正确处置是
+  // 在同一会话上稍等再重发——upstreamTransient 让 completionWithToken 的
+  // 重试循环等待后进行第二次尝试。
+  //
+  // 注意：这是兜底。真正的修复在 runner 侧——工具调用之后要读到 FINISHED
+  // 再结束，从源头上不产生未收尾的消息。
+  const bizCode = json?.data?.biz_code;
+  if (isUpstreamNotSettledError(json)) {
+    const err = new Error(
+      bizCode === 11
+        ? 'DeepSeek upstream is still finishing the previous message (biz_code=11) — retry after a short delay'
+        : 'DeepSeek upstream rejected the previous message id as not ready (biz_code=26) — retry after a short delay',
+    );
+    err.upstreamTransient = true;
+    throw err;
+  }
+
   if (code === 5 || json?.data?.biz_code === 5) {
     // 禁言：上游通常给出 mute_until（秒或毫秒时间戳），优先按它设置禁期；
     // 缺失时回落到默认 3 天。禁期内不再重登该账号，避免加重风控。
@@ -313,12 +351,24 @@ export async function completion({ modelType, prompt, thinkingEnabled = false, s
  * 用单个已获取的 slot 完成一次补全请求。
  * 内部保留原有的"会话失效重试一次"逻辑（同一凭据内）。
  * 限流类错误会带上 credentialFailover 标记，交由外层换凭据。
+ *
+ * 另外处理「上游上一条回复未收尾」（biz_code=11/26）：这类错误会随上游
+ * 完成上一次生成而自行消失，所以等待后在**同一会话**上重发一次即可，
+ * 既不换凭据也不丢上下文。
  */
 async function completionWithToken(slot, { modelType, prompt, thinkingEnabled, searchEnabled, parentMessageId, refFileIds, preferVision, resolveSession, getPrompt, signal }) {
   try {
     throwIfAborted(signal);
     let lastErr;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // 给「上游未收尾」的重试留出额度：会话失效重试会各用一次，
+    // 两者叠加时最多 4 次尝试，避免把一次偶发的时序问题放大成连环请求。
+    //
+    // 实测（2026-11-02）：上游把上一条回复收尾通常在几百毫秒内完成，
+    // 但长回复的收尾可能更久，所以等待时间逐次递增而不是固定值。
+    const MAX_ATTEMPTS = 4;
+    const TRANSIENT_WAITS_MS = [600, 1500, 3000];
+    let transientAttempts = 0;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       try {
         // Step 2: Solve PoW using the same token. Retry attempts resolve a new
         // session after the stale one has been invalidated.
@@ -465,6 +515,19 @@ async function completionWithToken(slot, { modelType, prompt, thinkingEnabled, s
         lastErr = err;
         if (err?.retryableInvalidSession && attempt === 0) {
           console.warn(`[DeepSeek] Invalid chat session for ${slot.token.slice(0, 12)}..., refreshing session and retrying once`);
+          continue;
+        }
+        // 上游还没把上一条回复收尾：等它一会儿，再在同会话重发。
+        // 等待时间逐次递增；用尽额度后如实抛出，不再无限重试。
+        if (err?.upstreamTransient && transientAttempts < TRANSIENT_WAITS_MS.length) {
+          const waitMs = TRANSIENT_WAITS_MS[transientAttempts];
+          transientAttempts += 1;
+          console.warn(
+            `[DeepSeek] 上游上一条回复尚未收尾（${err.message}），`
+            + `${waitMs}ms 后重试（第 ${transientAttempts} 次）`,
+          );
+          await new Promise(resolve => setTimeout(resolve, waitMs));
+          throwIfAborted(signal);
           continue;
         }
         throw err;

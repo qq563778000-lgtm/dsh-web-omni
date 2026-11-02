@@ -538,8 +538,27 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       pendingWhitespace = '';
     };
 
+    // 工具调用识别出来之后，仍要读到上游的 FINISHED 才算这一轮结束。
+    //
+    // 真实故障（2026-11-02 DSH）：step 8 产出工具调用后立刻 break 并
+    // cancel()，上游那条消息永远收不到 status=FINISHED，一直停在 "wip"；
+    // 350ms 后 step 9 拿它当 parent_message_id 续传，被上游直接拒绝：
+    //     {"code":0,"data":{"biz_code":11,"biz_msg":"message still wip"}}
+    // 表现为「最新一轮对话发送即报错」，且只在下一步紧接着发起时触发。
+    //
+    // 实测代价接近零：正文结束与 FINISHED 同帧到达（2026-11-02，2022 字
+    // 正文，间隔 0ms）。因此这里改为「读完再停」，只在超时或客户端离开时
+    // 才真正掐断。
+    let upstreamFinished = false;
+    let drainTimer = null;
+    const DRAIN_TIMEOUT_MS = 15000;
+
     for await (const event of parseSSEStream(streamBody, { signal: abortController.signal })) {
       if (clientGone) break;
+      if (event.type === 'done') {
+        upstreamFinished = true;
+        break;
+      }
       if (event.type === 'error') {
         try { await streamBody?.cancel?.(); } catch {}
         // 流中途才报限流：数据已开始下发，本次无法更换凭据，但要让该
@@ -589,7 +608,20 @@ export async function* runDeepSeek(internalRequest, context = {}) {
           }
           if (processed.completed && processed.toolCalls?.length) {
             detectedToolCalls = processed.toolCalls;
-            break;
+            // 不再 break：见上方注释。工具调用已经拿到，这里只是把流读到
+            // FINISHED，期间不再产出任何正文（后续 chunk 仍会走
+            // detector.process，但 completed 之后它只返回空 delta）。
+            //
+            // 定时器只设一次：同一轮的后续 chunk 会重复进入本分支，
+            // 每次都新建会让先前的定时器失去引用、无法在收尾时清除。
+            if (!drainTimer) {
+              drainTimer = setTimeout(() => {
+                // 上游迟迟不给 FINISHED（网关挂住等）：不能等下去，
+                // 否则整轮对话卡死。掐断后本轮照常返回工具调用。
+                try { streamBody?.cancel(); } catch {}
+              }, DRAIN_TIMEOUT_MS);
+              drainTimer.unref?.();
+            }
           }
         } else {
           for (const textEvent of emitText(event.content)) yield textEvent;
@@ -600,12 +632,15 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       } else if (event.type === 'usage') {
         usage = event.usage;
         yield createUsageUpdated({ requestId, responseId, usage: { outputTokens: usageOutputTokens(usage) } });
-      } else if (event.type === 'done') {
-        break;
       }
     }
 
-    if (detectedToolCalls?.length) {
+    // 收尾：drain 定时器无论走哪条路径都要清掉。
+    if (drainTimer) { clearTimeout(drainTimer); drainTimer = null; }
+
+    // 只有「解析器判定完成但没取到工具调用」或「错误/客户端离开」才需要掐断；
+    // 正常收到 FINISHED 时流已自然结束，cancel 是无害的空操作。
+    if (detectedToolCalls?.length && !upstreamFinished) {
       try { await streamBody?.cancel?.(); } catch {}
     }
 
