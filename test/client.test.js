@@ -77,26 +77,49 @@ test('inject 声明了 slots 依赖', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 设置页不再提供「添加账号」（2026-10-30）
+// 账号密码登录（2026-11-03 重新提供）
 //
-// 上游登录接口被 AWS WAF 拦截：从非浏览器网络直接登录常返回 202 空响应，
-// 成功率取决于出口 IP。用户看到的是"填了密码却说登录失败"。
-// 相比从浏览器复制一个 token，账号方式既不可靠，也让密码落盘。
+// 2026-10-30 曾移除：当时的实现是从 Node 直接 POST /api/v0/users/login，
+// 被 AWS WAF 拦成 202 空响应，且密码要落盘，体验与安全都差。
+//
+// 2026-11-03 实测后重新提供，做法完全不同：
+//   - 借**真实 Chrome** 完成填表与提交。WAF 拦的是"非浏览器发起的登录"，
+//     真实浏览器能穿过（实测拿到 200 + 完整业务响应）。
+//   - 登录请求的 body 是 224 字节加密密文，Node 侧无法构造——这也是
+//     为什么必须借浏览器，而不是修请求头。
+//   - **不保存密码**：只换取 token，密码用完即丢，因此与旧的 accounts
+//     路径（明文落盘）有本质区别。
 // ---------------------------------------------------------------------------
 
-test('设置页与路由都不再暴露账号入口', async () => {
+test('设置页提供账号密码登录，但走登录换 token 而非保存密码', async () => {
   const { readFileSync } = await import('node:fs');
   const clientSource = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
   const routesSource = readFileSync(new URL('../lib/routes.js', import.meta.url), 'utf8');
 
-  assert.doesNotMatch(clientSource, /addAccount/, '客户端不得再提交 addAccount');
-  // 不得再有账号表单：邮箱输入 + 密码输入的组合
-  assert.doesNotMatch(clientSource, /email/i, '界面不得出现邮箱输入');
-  assert.doesNotMatch(routesSource, /addAccount/, '路由不得再接受 addAccount');
+  // 客户端：有账号登录入口
+  assert.match(clientSource, /loginAccount/, '客户端应提交 loginAccount');
 
-  // 但必须保留 Token 入口
-  assert.match(clientSource, /addToken/);
-  assert.match(routesSource, /addToken/);
+  // 路由：走 loginWithAccount，并且**不**落盘密码
+  assert.match(routesSource, /loginAccount/);
+  assert.match(routesSource, /loginWithAccount/);
+  assert.doesNotMatch(routesSource, /addAccount/, '不得走会把密码落盘的旧路径');
+
+  // 登录成功后必须按 token 入库
+  assert.match(routesSource, /addToken\(\{ token: result\.token \}\)/, '登录结果应以 token 形式入库');
+});
+
+test('登录模块借真实浏览器完成，且密码不落盘', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../lib/account-login.js', import.meta.url), 'utf8');
+
+  // 关键实现特征：起浏览器 + 用 CDP 执行页面内登录脚本
+  assert.match(src, /spawn\(/, '应启动浏览器进程');
+  assert.match(src, /remote-debugging-port/, '应通过 DevTools 协议驱动');
+  assert.match(src, /localStorage\.getItem\('userToken'\)/, '应从 localStorage 取回 token');
+
+  // 安全约束：不得把密码写进文件或日志
+  assert.doesNotMatch(src, /writeFileSync\([^)]*password/i, '不得把密码写入文件');
+  assert.doesNotMatch(src, /console\.(log|warn|error)\([^)]*password/i, '不得把密码打进日志');
 });
 
 test('设置页使用 Host 主题变量而非写死颜色', async () => {

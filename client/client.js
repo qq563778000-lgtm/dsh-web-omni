@@ -68,6 +68,12 @@ window.__ModuleLoader__.load({
       affinityOff: '关',
       affinityOffDesc: '每轮重发完整历史，最兼容但输入成本更高。',
       autoFetch: '从浏览器获取 Token（全部 profile）——重新登录浏览器后点此恢复',
+      accountTitle: '用账号密码登录',
+      accountEmail: 'DeepSeek 账号（邮箱）',
+      accountPassword: '密码',
+      accountSubmit: '登录并添加',
+      accountBusy: '正在登录…',
+      accountHint: '会打开一个后台浏览器完成登录，约需 20 秒。密码只用于这一次登录，不会保存。',
       autoFetching: '正在读取…',
       autoFetchOk: (browser) => `已从 ${browser} 添加 Token。`,
       autoFetchPresent: '读到的 Token 已在列表中。',
@@ -196,6 +202,10 @@ window.__ModuleLoader__.load({
 .dwo-code-copy{position:absolute;top:6px;right:6px;padding:2px 8px;height:24px;
   background:var(--dsw-alias-bg-base,#fff);border-radius:var(--dsw-radius-md,8px)}
 .dwo-hint{margin:0;font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
+.dwo-acct-toggle{color:var(--dsw-alias-label-tertiary,#8a8a8a)}
+.dwo-acct-toggle:hover{color:var(--dsw-alias-label-secondary,#6b6b6b);background:none}
+.dwo-acct-body{display:grid;gap:8px;padding:10px 0 2px}
+.dwo-acct-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 
 /* 设置项容器：标题 + 可选说明 */
 .dwo-field{display:grid;gap:8px}
@@ -419,6 +429,11 @@ window.__ModuleLoader__.load({
       const [mode, setMode] = useState('ask');
       const [affinity, setAffinity] = useState(true);
       const [autoBusy, setAutoBusy] = useState(false);
+      const [acctOpen, setAcctOpen] = useState(false);
+      const [acctEmail, setAcctEmail] = useState('');
+      const [acctPassword, setAcctPassword] = useState('');
+      const [acctBusy, setAcctBusy] = useState(false);
+      const [acctResult, setAcctResult] = useState(null);
       const [autoResult, setAutoResult] = useState(null);
 
       const load = useCallback(async () => {
@@ -509,6 +524,42 @@ window.__ModuleLoader__.load({
        *
        * 这两种情况的处置完全不同，笼统报"失败"只会让用户反复重试。
        */
+      /**
+       * 用账号密码登录。
+       *
+       * 为什么放在设置页而不是首次对话自动做：一次要 20 秒左右（要起浏览器、
+       * 填表、等登录态落盘），而且密码是敏感输入，应当由用户显式发起。
+       */
+      const submitAccount = async () => {
+        if (!acctEmail.trim() || !acctPassword) return;
+        setAcctBusy(true);
+        setAcctResult(null);
+        setError(null);
+        try {
+          const value = await request(CREDENTIALS_PATH, {
+            method: 'POST',
+            // 登录要跑浏览器，比普通请求慢得多，单独放宽超时。
+            body: JSON.stringify({
+              action: 'loginAccount',
+              email: acctEmail.trim(),
+              password: acctPassword,
+            }),
+          });
+          if (value?.ok) {
+            setAcctResult({ kind: 'ok', text: value.message || '登录成功，已添加 Token。' });
+            // 密码用完立即从组件状态里清掉，不在内存里留着。
+            setAcctPassword('');
+            await load();
+          } else {
+            setAcctResult({ kind: 'fail', text: value?.message || '登录失败' });
+          }
+        } catch (err) {
+          setAcctResult({ kind: 'fail', text: String(err.message || err) });
+        } finally {
+          setAcctBusy(false);
+        }
+      };
+
       const autoFetch = async () => {
         setAutoBusy(true);
         setAutoResult(null);
@@ -726,6 +777,62 @@ window.__ModuleLoader__.load({
             busy: autoBusy,
             disabled: busy,
           }),
+        ]),
+
+        // 账号密码登录：折叠区，默认收起。
+        // 它是"没有浏览器登录态、也不想手动复制 Token"时的第三条路，
+        // 但不是主路径（要起浏览器、约 20 秒），所以不占主视觉。
+        h('div', { key: 'acct' }, [
+          h('button', {
+            key: 'tg',
+            type: 'button',
+            className: 'dwo-btn dwo-btn-link dwo-acct-toggle',
+            onClick: () => setAcctOpen(!acctOpen),
+            'aria-expanded': acctOpen,
+          }, `${acctOpen ? '▾' : '▸'} ${text.accountTitle}`),
+
+          acctOpen ? h('div', { key: 'body', className: 'dwo-acct-body' }, [
+            h('input', {
+              key: 'e',
+              className: 'dwo-input',
+              value: acctEmail,
+              onChange: event => setAcctEmail(event.target.value),
+              placeholder: text.accountEmail,
+              type: 'email',
+              autoComplete: 'off',
+              spellCheck: false,
+              disabled: acctBusy,
+            }),
+            h('input', {
+              key: 'p',
+              className: 'dwo-input',
+              value: acctPassword,
+              onChange: event => setAcctPassword(event.target.value),
+              onKeyDown: event => { if (event.key === 'Enter') submitAccount(); },
+              placeholder: text.accountPassword,
+              type: 'password',
+              autoComplete: 'off',
+              spellCheck: false,
+              disabled: acctBusy,
+            }),
+            h('div', { key: 'row', className: 'dwo-acct-row' }, [
+              h('button', {
+                key: 'go',
+                type: 'button',
+                className: 'dwo-btn dwo-btn-primary',
+                onClick: submitAccount,
+                disabled: acctBusy || !acctEmail.trim() || !acctPassword,
+              }, acctBusy ? text.accountBusy : text.accountSubmit),
+              h('span', { key: 'hint', className: 'dwo-hint' }, text.accountHint),
+            ]),
+
+            acctResult
+              ? h('p', {
+                key: 'r',
+                className: `dwo-notice${acctResult.kind === 'ok' ? '' : ' dwo-notice-warn'}`,
+              }, acctResult.text)
+              : null,
+          ]) : null,
         ]),
 
         autoResult
