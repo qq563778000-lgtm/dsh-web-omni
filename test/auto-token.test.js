@@ -6,6 +6,7 @@ import {
   autoFetchBrowserTokens,
   describeAutoFetchFailure,
   hasUsableCredential,
+  AUTOFETCH_COOLDOWN_MS,
   __resetAutoFetchState,
 } from '../lib/auto-token.js';
 
@@ -41,21 +42,64 @@ test('凭据全部被禁用时判定为 false', () => {
   assert.equal(hasUsableCredential(kernel), false);
 });
 
-test('整个进程只尝试一次', async () => {
+test('冷却期内复用上次结论，不重复扫描', async () => {
   __resetAutoFetchState();
 
-  // 第一次：触发一次真实扫描（本机可能真的没有可用 token）。
-  const first = await autoFetchBrowserTokens({ validate: async () => false });
-  assert.equal(typeof first.added, 'number');
+  // 注入扫描入口来精确计数。用真实扫描的话，一次要 1.5~4 秒（读盘解压），
+  // 而 validate 还会对每个候选打一次上游（3~4 秒/个）——测试会慢到没法跑。
+  let scans = 0;
+  const fakeScan = async () => {
+    scans += 1;
+    return { ok: false, reason: 'not-found', tried: [] };
+  };
 
-  // 第二次：应直接复用上次结论，不再扫描。
-  // 用时间断言：扫描要 1.5~4 秒，命中缓存则应远快于此。
-  const t0 = Date.now();
-  const second = await autoFetchBrowserTokens({ validate: async () => false });
-  const elapsed = Date.now() - t0;
+  const first = await autoFetchBrowserTokens({ scan: fakeScan, now: 1000 });
+  const second = await autoFetchBrowserTokens({ scan: fakeScan, now: 1000 + AUTOFETCH_COOLDOWN_MS - 1 });
 
-  assert.deepEqual(second, first, '第二次应返回与第一次相同的结果');
-  assert.ok(elapsed < 500, `命中缓存应很快，实测 ${elapsed}ms`);
+  assert.deepEqual(second, first, '冷却期内应返回与第一次相同的结果');
+  assert.equal(scans, 1, '冷却期内不得再次扫描');
+});
+
+test('冷却期过后允许重新扫描', async () => {
+  __resetAutoFetchState();
+
+  let scans = 0;
+  const fakeScan = async () => {
+    scans += 1;
+    return { ok: false, reason: 'not-found', tried: [] };
+  };
+
+  await autoFetchBrowserTokens({ scan: fakeScan, now: 1000 });
+  await autoFetchBrowserTokens({ scan: fakeScan, now: 1000 + AUTOFETCH_COOLDOWN_MS });
+
+  assert.equal(scans, 2, '冷却期过了必须允许再扫——浏览器登录态可能已经变了');
+});
+
+test('force 跳过冷却，立即执行', async () => {
+  __resetAutoFetchState();
+
+  // 用户显式点"重新获取"时必须立刻生效，不能因为还在冷却期就什么都不做。
+  let scans = 0;
+  const fakeScan = async () => {
+    scans += 1;
+    return { ok: false, reason: 'not-found', tried: [] };
+  };
+
+  await autoFetchBrowserTokens({ scan: fakeScan, now: 1000 });
+  await autoFetchBrowserTokens({ scan: fakeScan, now: 1001, force: true });
+
+  assert.equal(scans, 2, 'force 必须跳过冷却');
+});
+
+test('冷却期的意义：凭据会死，成功不是终态', () => {
+  // 真实故障（2026-11-03）：用户在浏览器退出登录 → 上游作废 token（40003）
+  // → 凭据禁用 3 天。旧实现"整个进程只试一次"，用户在浏览器重新登录后
+  // 插件永远拿不到新 token，除非重启 DSH。
+  //
+  // 这个测试不做行为断言（上面的冷却期测试已覆盖），在这里记录设计依据，
+  // 防止将来有人把冷却改回"一次性"标志。
+  assert.ok(AUTOFETCH_COOLDOWN_MS > 60 * 1000, '冷却窗口必须足够长，挡住每轮对话都扫一遍');
+  assert.ok(AUTOFETCH_COOLDOWN_MS < 60 * 60 * 1000, '冷却窗口必须足够短，重新登录后不用等太久');
 });
 
 test('失败提示按原因分流，给出对应的处置', () => {

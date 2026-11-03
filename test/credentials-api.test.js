@@ -31,12 +31,17 @@ test('同一 token 掩码稳定，可用于反查', () => {
   assert.equal(maskToken(token), maskToken(token));
 });
 
-test('路由返回 alreadyPresent，区分"新增"与"已存在"', () => {
+test('区分"新增"与"已存在"，且不会把已存在报成新增', () => {
   // 这个字段是修复的核心：早前把"已存在"的异常吞掉后一律回 added=true，
   // 用户看到"已添加"却发现列表里没有新条目。
-  assert.match(routesSource, /alreadyPresent/,
-    '路由应返回 alreadyPresent 字段');
-  assert.match(routesSource, /已存在/, '应识别"已存在"的错误');
+  //
+  // "已存在"的识别逻辑现在在 auto-token.js（设置页与自动获取共用同一套
+  // 流程），因此两个模块合起来看。
+  const autoTokenSource = readFileSync(new URL('../lib/auto-token.js', import.meta.url), 'utf8');
+  const combined = routesSource + autoTokenSource;
+
+  assert.match(combined, /alreadyPresent/, '应返回 alreadyPresent 字段');
+  assert.match(combined, /已存在/, '应识别"已存在"的错误');
 });
 
 test('前端区分新增与已存在两种提示', () => {
@@ -84,7 +89,19 @@ test('浏览器获取会收集本机所有 profile 的所有有效 token', () =>
 });
 
 test('路由把全部有效 token 逐个入库', () => {
-  assert.match(routesSource, /result\.tokens/, '应遍历全部有效 token');
-  assert.match(routesSource, /added \+= 1/, '应统计新增数量');
-  assert.match(routesSource, /alreadyPresent \+= 1/, '应统计已存在数量');
+  // 断言"逐个入库"的语义落在哪个模块都可以，但**必须落到某一个**——
+  // 曾经这个逻辑在 routes.js 里，后来搬到了 auto-token.js（为了让
+  // 设置页与自动获取共用同一套逻辑）。
+  //
+  // 这里检查两个模块合起来是否覆盖了关键环节：拿到全部有效 token、
+  // 逐个入库、统计新增数量。
+  const autoTokenSource = readFileSync(new URL('../lib/auto-token.js', import.meta.url), 'utf8');
+  const combined = routesSource + autoTokenSource;
+
+  assert.match(combined, /result\.tokens/, '应遍历全部有效 token');
+  assert.match(combined, /added \+= 1/, '应统计新增数量');
+  assert.match(combined, /for \(const item of list\)/, '应逐个处理候选');
+  // "已存在"必须被容忍而不是当成失败——那条 token 本来就在池里，
+  // 重新扫描会再遇到它。
+  assert.match(combined, /已存在/, '重复的 token 应被跳过而不是报错');
 });

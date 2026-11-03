@@ -67,7 +67,7 @@ window.__ModuleLoader__.load({
       affinityOnDesc: '同一对话复用上游会话，只发增量内容。',
       affinityOff: '关',
       affinityOffDesc: '每轮重发完整历史，最兼容但输入成本更高。',
-      autoFetch: '从浏览器获取 Token（全部 profile）',
+      autoFetch: '从浏览器获取 Token（全部 profile）——重新登录浏览器后点此恢复',
       autoFetching: '正在读取…',
       autoFetchOk: (browser) => `已从 ${browser} 添加 Token。`,
       autoFetchPresent: '读到的 Token 已在列表中。',
@@ -515,12 +515,35 @@ window.__ModuleLoader__.load({
         setError(null);
         try {
           const value = await request(BROWSER_TOKEN_PATH, { method: 'POST' });
-          if (value?.added > 0) {
+
+          // 清理失效项也要如实报出来。
+          //
+          // 为什么：用户在浏览器退出登录后，旧 token 全部失效。这次点
+          // "重新获取"会顺手把死掉的清掉——如果只说"添加了 1 个"，用户
+          // 会发现列表里的 ✗ 不见了却不知道为什么。
+          const removed = Number(value?.removed) || 0;
+
+          if (value?.added > 0 && removed > 0) {
+            setAutoResult({
+              kind: 'ok',
+              text: `已从浏览器添加 ${value.added} 个 Token，并清理 ${removed} 个失效项。`,
+            });
+            setState({ ...(state || {}), credentials: value.credentials });
+          } else if (value?.added > 0) {
             // 一次可能读到多个有效 token（本机多个 Chrome 账号都登录过）
             const n = value.added;
             setAutoResult({
               kind: 'ok',
               text: n > 1 ? `已从浏览器添加 ${n} 个 Token。` : `已从 ${value.browser} 添加 Token。`,
+            });
+            setState({ ...(state || {}), credentials: value.credentials });
+          } else if (removed > 0) {
+            // 只清理了失效项、没有新增：说明浏览器里没有可用的登录态，
+            // 但旧的那批确实死了。这不是成功，但也不是失败。
+            setAutoResult({
+              kind: 'fail',
+              reason: 'not-found',
+              text: `已清理 ${removed} 个失效 Token，但浏览器里没有可用的登录态。`,
             });
             setState({ ...(state || {}), credentials: value.credentials });
           } else if (value?.alreadyPresent > 0) {
