@@ -24,11 +24,12 @@ process.env.ZHI2API_DATA_DIR = dataDir;
 process.env.ZHI2API_ENV_PATH = join(dataDir, '.env');
 
 const store = await import('../kernel/services/config-store.js');
+const { DEFAULT_MODE } = await import('../kernel/core/mode.js');
 
 const CONFIG_PATH = join(dataDir, 'config.json');
 
-function writeConfig(mode) {
-  writeFileSync(CONFIG_PATH, `${JSON.stringify({ runtime: { mode } }, null, 2)}\n`);
+function writeConfig(mode, modeExplicit = true) {
+  writeFileSync(CONFIG_PATH, `${JSON.stringify({ runtime: { mode, modeExplicit } }, null, 2)}\n`);
 }
 
 test.after(() => {
@@ -50,6 +51,13 @@ test('外部改动文件后，getConfig 能读到新值', () => {
   assert.equal(store.getConfig().runtime.mode, 'ask', '应感知到切回 ask');
 });
 
+test('外部改动文件后，无显式标记的配置跟随默认值', () => {
+  // 没有 modeExplicit 说明用户从没碰过这个开关，磁盘上的值只是当年
+  // 默认值的物化——应当跟随当前默认值，而不是被当作显式选择。
+  writeConfig('agent', false);
+  assert.equal(store.getConfig().runtime.mode, DEFAULT_MODE, '应跟随默认值');
+});
+
 test('文件未改动时不重复解析（结果稳定）', () => {
   writeConfig('ask');
   const first = store.getConfig();
@@ -58,9 +66,10 @@ test('文件未改动时不重复解析（结果稳定）', () => {
   assert.equal(first.runtime.mode, second.runtime.mode);
 });
 
-test('非法 mode 归一化为 agent', () => {
+test('非法 mode 归一化为默认值', () => {
   writeConfig('hacker');
-  assert.equal(store.getConfig().runtime.mode, 'agent');
+  assert.equal(store.getConfig().runtime.mode, DEFAULT_MODE);
+  assert.equal(DEFAULT_MODE, 'ask', '默认应为 ask（原生对话）');
 });
 
 test('通过 saveConfig 写入后，内存与磁盘一致', () => {

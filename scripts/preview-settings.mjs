@@ -61,8 +61,8 @@ const BODY = `
     <div class="dwo-setting">
       <span class="dwo-setting-label">对话模式</span>
       <div class="dwo-seg" role="radiogroup">
-        <button class="dwo-seg-b dwo-seg-on" role="radio" aria-checked="true">Agent</button>
-        <button class="dwo-seg-b" role="radio" aria-checked="false">Ask</button>
+        <button class="dwo-seg-b" role="radio" aria-checked="false">Agent</button>
+        <button class="dwo-seg-b dwo-seg-on" role="radio" aria-checked="true">Ask</button>
       </div>
     </div>
     <div class="dwo-setting">

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSyn
 import { dirname, resolve } from 'path';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { appRootPath } from '../utils/runtime-paths.js';
+import { DEFAULT_MODE, normalizeMode, resolveMode } from '../core/mode.js';
 
 const DEFAULT_CONFIG = Object.freeze({
   version: 1,
@@ -23,18 +24,34 @@ const DEFAULT_CONFIG = Object.freeze({
     /**
      * 对话模式。
      *
-     *   'agent' —— 默认。把 DSH 的全部工具声明发给上游，模型可自主调用
+     *   'agent' —— 把 DSH 的全部工具声明发给上游，模型可自主调用
      *              （读文件、执行命令、检索……），即插件原本的行为。
-     *   'ask'   —— 纯问答。**不向上游声明任何工具**，提示词里也不注入
-     *              工具说明与触发信号。模型只会用自然语言回答，
+     *   'ask'   —— 原生对话。**不向上游声明任何工具**，提示词里也不注入
+     *              系统设定、工具说明与触发信号。模型只会用自然语言回答，
      *              不会发起任何工具调用。
+     *
+     * 默认 'ask'：插件的定位是"把 DeepSeek Web 接进 DSH 做对话"，而 DSH
+     * 默认会带上完整的行为契约与全部工具声明（约 25K 字符）。对只想问答
+     * 的用户，这是又贵又不想要的；需要工具时切到 agent 即可，一键可达。
      *
      * 为什么不做成"发工具但禁止调用"：DeepSeek Web 端只要收到工具声明，
      * 就会按工具协议组织输出；模型仍可能写出一段调用标记。那种"禁止"
      * 只能在解析层丢弃，模型已经把 token 花在了拼调用上，作答质量反而下降。
      * 完全不声明工具，模型才真正进入纯对话状态。
      */
-    mode: 'agent',
+    mode: DEFAULT_MODE,
+    /**
+     * 用户是否**明确**选择过模式。
+     *
+     * 为什么需要这个标记：配置写盘时会被整体物化（saveConfig 落盘的是
+     * 归一化后的完整配置），于是"从没碰过开关"和"明确选了 Agent"
+     * 在磁盘上逐字节相同。若只按 mode 字段判断，历史用户的显式选择
+     * 会在改默认值时被无声覆盖。
+     *
+     * 语义：设置页每次切换模式都写 true；为 false / 缺失时一律按
+     * DEFAULT_MODE 处理（跟随默认值）。
+     */
+    modeExplicit: false,
     sessionTtlSeconds: 1800,
     // 会话亲和（会话续传）默认开启。
     //
@@ -271,7 +288,15 @@ function normalizeConfig(input) {
   );
   merged.server.systemFingerprint = String(merged.server.systemFingerprint || 'fp_omni_v1').trim() || 'fp_omni_v1';
 
-  merged.runtime.mode = String(merged.runtime.mode || '').toLowerCase() === 'ask' ? 'ask' : 'agent';
+  merged.runtime.mode = normalizeMode(merged.runtime.mode);
+  // modeExplicit 是布尔量：只有严格 true 才算"用户明确选过"。
+  merged.runtime.modeExplicit = merged.runtime.modeExplicit === true;
+  // 落盘的是"有效模式"：显式选择照用，没显式选过的跟随默认值。
+  //
+  // 这一步是迁移机制的核心。它让"从没碰过开关"与"明确选了 Agent"
+  // 这两种历史上在磁盘上无法区分的情况，得到不同结果：
+  // 前者跟随新默认值，后者被尊重。
+  merged.runtime.mode = resolveMode(merged.runtime);
   merged.runtime.sessionTtlSeconds = parseIntValue(merged.runtime.sessionTtlSeconds, 1800, 1);
   merged.runtime.enableConversationAffinity = Boolean(merged.runtime.enableConversationAffinity);
   merged.runtime.conversationTtlMs = parseIntValue(merged.runtime.conversationTtlMs, 1800000, 1000);
@@ -636,6 +661,10 @@ export function getPublicConfig() {
       systemFingerprint: current.server.systemFingerprint,
     },
     runtime: {
+      // 生效的模式（已按显式选择 / 默认值解析过）。
+      mode: current.runtime.mode,
+      // 用户是否明确选过：决定将来改默认值时是否跟随。
+      modeExplicit: current.runtime.modeExplicit,
       sessionTtlSeconds: current.runtime.sessionTtlSeconds,
       enableConversationAffinity: current.runtime.enableConversationAffinity,
       conversationTtlMs: current.runtime.conversationTtlMs,

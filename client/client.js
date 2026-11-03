@@ -411,7 +411,12 @@ window.__ModuleLoader__.load({
       const [testResult, setTestResult] = useState(null);
       const [testingId, setTestingId] = useState(null);
       const [token, setToken] = useState('');
-      const [mode, setMode] = useState('agent');
+      // 初始态与服务端缺省保持一致（ask）。服务端返回后会用真实值覆盖。
+      //
+      // 这里必须写死字面量：客户端是预打包模块，只能 require('react')，
+      // 引不进内核的常量模块。与内核默认值的一致性由 test/client.test.js
+      // 断言守住——两边一旦漂移，用户会看到界面显示 Ask 却按 Agent 执行。
+      const [mode, setMode] = useState('ask');
       const [affinity, setAffinity] = useState(true);
       const [autoBusy, setAutoBusy] = useState(false);
       const [autoResult, setAutoResult] = useState(null);
@@ -648,8 +653,8 @@ window.__ModuleLoader__.load({
             busy,
             onChange: changeMode,
             options: [
-              { id: 'agent', label: text.modeAgent, desc: text.modeAgentDesc },
               { id: 'ask', label: text.modeAsk, desc: text.modeAskDesc },
+              { id: 'agent', label: text.modeAgent, desc: text.modeAgentDesc },
             ],
           }),
 
