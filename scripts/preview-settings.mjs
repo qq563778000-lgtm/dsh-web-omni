@@ -57,57 +57,43 @@ const BODY = `
 
   <p class="dwo-notice">凭据池尚未就绪，首次对话时会自动初始化。</p>
 
-  <div class="dwo-field">
-    <div class="dwo-field-head">
-      <span class="dwo-field-label">对话模式</span>
-      <span class="dwo-field-hint">决定发给上游的内容</span>
+  <div class="dwo-settings">
+    <div class="dwo-setting">
+      <span class="dwo-setting-label">对话模式</span>
+      <div class="dwo-seg" role="radiogroup">
+        <button class="dwo-seg-b dwo-seg-on" role="radio" aria-checked="true">Agent</button>
+        <button class="dwo-seg-b" role="radio" aria-checked="false">Ask</button>
+      </div>
     </div>
-    <div class="dwo-cards" role="radiogroup">
-      <button class="dwo-card dwo-card-on" role="radio" aria-checked="true">
-        <span class="dwo-card-dot"></span>
-        <span class="dwo-card-body">
-          <span class="dwo-card-title">Agent</span>
-          <span class="dwo-card-desc">系统提示 + 全部工具，可读写文件、执行命令。</span>
-        </span>
-      </button>
-      <button class="dwo-card" role="radio" aria-checked="false">
-        <span class="dwo-card-dot"></span>
-        <span class="dwo-card-body">
-          <span class="dwo-card-title">Ask</span>
-          <span class="dwo-card-desc">原生对话，只发你说的话，不带任何提示与注入。</span>
-        </span>
-      </button>
+    <div class="dwo-setting">
+      <span class="dwo-setting-label">会话亲和</span>
+      <div class="dwo-seg" role="radiogroup">
+        <button class="dwo-seg-b dwo-seg-on" role="radio" aria-checked="true">开</button>
+        <button class="dwo-seg-b" role="radio" aria-checked="false">关</button>
+      </div>
     </div>
   </div>
-
-  <button class="dwo-toggle dwo-toggle-on" role="switch" aria-checked="true">
-    <span class="dwo-toggle-body">
-      <span class="dwo-toggle-title">会话亲和</span>
-      <span class="dwo-toggle-desc">同一对话复用上游会话，只发增量内容。</span>
-    </span>
-    <span class="dwo-switch"><span class="dwo-switch-knob"></span></span>
-  </button>
 
   <ul class="dwo-list">
     <li class="dwo-row">
       <span class="dwo-label">+U7ZgprKcckU…</span>
       <span class="dwo-state dwo-state-ok"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
-      <button class="dwo-icon" title="测试有效性"><svg viewBox="0 0 24 24"><path d="M12 14l4-4M12 20a8 8 0 100-16 8 8 0 00016zM4 12h2M18 12h2"/></svg></button>
+      <button class="dwo-icon" title="测试有效性"><svg viewBox="0 0 24 24"><path d="M4.5 12.5l4 4 6-9 5 5 5-5"/></svg></button>
       <button class="dwo-icon dwo-icon-danger" title="删除"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg></button>
     </li>
     <li class="dwo-row">
       <span class="dwo-label">vo4x8Wjy2wpB…</span>
       <span class="dwo-err">错误 5</span>
       <span class="dwo-state dwo-state-bad"><svg viewBox="0 0 24 24"><path d="M15 9l-6 6M9 9l6 6"/></svg></span>
-      <button class="dwo-icon" title="测试有效性"><svg viewBox="0 0 24 24"><path d="M12 14l4-4M12 20a8 8 0 100-16 8 8 0 00016zM4 12h2M18 12h2"/></svg></button>
+      <button class="dwo-icon" title="测试有效性"><svg viewBox="0 0 24 24"><path d="M4.5 12.5l4 4 6-9 5 5 5-5"/></svg></button>
       <button class="dwo-icon dwo-icon-danger" title="删除"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg></button>
     </li>
   </ul>
 
   <div class="dwo-add">
     <input class="dwo-input" placeholder="粘贴 DeepSeek Web Token" />
-    <button class="dwo-btn dwo-btn-primary">添加</button>
-    <button class="dwo-icon" title="从浏览器获取 Token"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 9h16M7 7h.01M10 7h.01"/></svg></button>
+    <button class="dwo-icon dwo-icon-primary" title="添加"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+    <button class="dwo-icon" title="从浏览器获取 Token"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 9h16M7 7h.01M10 7h.01M12 11v5M9.5 13.5L12 16l2.5-2.5"/></svg></button>
   </div>
 
   <details class="dwo-help" open>

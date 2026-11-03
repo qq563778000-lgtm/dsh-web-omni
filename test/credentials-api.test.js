@@ -57,3 +57,34 @@ test('状态用图标表达，不再用文字徽章', () => {
   assert.match(clientSource, /StateIcon/, '应有状态图标组件');
   assert.doesNotMatch(clientSource, /dwo-badge/, '旧的文字徽章样式应移除');
 });
+
+test('两个设置并排一行，用紧凑分段单选', () => {
+  assert.match(clientSource, /dwo-settings/, '应有并排容器');
+  assert.match(clientSource, /SegmentedRadio/, '应有分段单选组件');
+  assert.match(clientSource, /dwo-seg-b/, '应有分段按钮样式');
+  assert.doesNotMatch(clientSource, /dwo-card/, '旧的大卡片样式应移除');
+  assert.doesNotMatch(clientSource, /ToggleRow/, '旧的开关行组件应移除');
+});
+
+test('添加按钮使用图标', () => {
+  assert.match(clientSource, /icon: 'plus'/, '应有加号图标');
+  assert.match(clientSource, /dwo-icon-primary/, '应有主按钮图标样式');
+});
+
+test('次要文案已淡化', () => {
+  assert.match(clientSource, /\.dwo-sub\{[^}]*font-size:11px/, '副标题应淡化');
+  assert.match(clientSource, /\.dwo-notice\{[^}]*font-size:11px/, '提示文字应淡化');
+});
+
+test('浏览器获取会收集本机所有 profile 的所有有效 token', () => {
+  const bt = readFileSync(new URL('../lib/browser-token.js', import.meta.url), 'utf8');
+  assert.match(bt, /collectLocalStorageTokens/, '应有全量收集函数');
+  assert.match(bt, /validTokens/, '应收集所有通过验证的 token');
+  assert.match(bt, /tokens:/, '应返回全部有效 token 列表');
+});
+
+test('路由把全部有效 token 逐个入库', () => {
+  assert.match(routesSource, /result\.tokens/, '应遍历全部有效 token');
+  assert.match(routesSource, /added \+= 1/, '应统计新增数量');
+  assert.match(routesSource, /alreadyPresent \+= 1/, '应统计已存在数量');
+});

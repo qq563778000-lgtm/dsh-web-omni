@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
 
     const text = {
       title: 'dsh-web-omni',
-      subtitle: 'DeepSeek Web 转 API · 凭据池',
+      subtitle: 'DeepSeek Web 转 API',
       available: '可用',
       total: '总数',
       disabled: '已禁用',
@@ -45,8 +45,8 @@ window.__ModuleLoader__.load({
       testOne: '测试有效性',
       notTested: '未测试',
       reload: '刷新',
-      empty: '还没有凭据。添加 Token 后即可开始对话。',
-      notReady: '凭据池尚未就绪，首次对话时会自动初始化。',
+      empty: '还没有 Token，添加后即可开始对话。',
+      notReady: '凭据池尚未就绪，首次对话时自动初始化。',
       valid: '有效',
       invalid: '无效',
       helpTitle: '如何获取 Token',
@@ -58,18 +58,19 @@ window.__ModuleLoader__.load({
       helpFallback: '若命令提示找不到，请在 Network 面板里任选一个 api 请求，复制请求头 Authorization 中 Bearer 之后的字符。',
       helpPrivacy: 'Token 等同于账号登录态，只保存在本机，不要分享给他人。',
       modeTitle: '对话模式',
-      modeHint: '决定发给上游的内容',
       modeAgent: 'Agent',
       modeAgentDesc: '系统提示 + 全部工具，可读写文件、执行命令。',
       modeAsk: 'Ask',
       modeAskDesc: '原生对话，只发你说的话，不带任何提示与注入。',
       affinityTitle: '会话亲和',
+      affinityOn: '开',
       affinityOnDesc: '同一对话复用上游会话，只发增量内容。',
+      affinityOff: '关',
       affinityOffDesc: '每轮重发完整历史，最兼容但输入成本更高。',
-      autoFetch: '从浏览器获取 Token',
+      autoFetch: '从浏览器获取 Token（全部 profile）',
       autoFetching: '正在读取…',
       autoFetchOk: (browser) => `已从 ${browser} 添加 Token。`,
-      autoFetchPresent: '该 Token 已在列表中。',
+      autoFetchPresent: '读到的 Token 已在列表中。',
       autoFetchFail: '未能从浏览器读到 Token。',
       autoFetchPendingTitle: '已登录，但数据还没落盘',
       autoFetchPending: '关闭 chat.deepseek.com 那个标签页（Ctrl+W）后再试。',
@@ -96,7 +97,7 @@ window.__ModuleLoader__.load({
 .dwo-root{display:grid;gap:16px;padding:4px 0;font-size:13px;color:var(--dsw-alias-label-primary,#1f1e1d)}
 .dwo-head{display:grid;gap:2px}
 .dwo-title{margin:0;font-size:15px;font-weight:600;line-height:22px}
-.dwo-sub{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#6b6b6b)}
+.dwo-sub{margin:0;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
 
 .dwo-stats{display:flex;gap:8px}
 .dwo-stat{flex:1;display:grid;gap:2px;padding:10px 12px;border-radius:var(--dsw-radius-md,8px);
@@ -105,7 +106,7 @@ window.__ModuleLoader__.load({
 .dwo-stat-value{font-size:20px;line-height:26px;font-weight:600;font-variant-numeric:tabular-nums}
 .dwo-stat-warn .dwo-stat-value{color:var(--dsw-alias-state-error-primary,#c22)}
 
-.dwo-notice{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#6b6b6b)}
+.dwo-notice{margin:0;font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
 .dwo-notice-warn{color:#b45309}
 .dwo-notice-error{color:var(--dsw-alias-state-error-primary,#c22)}
 
@@ -132,6 +133,8 @@ window.__ModuleLoader__.load({
 .dwo-icon-ok{color:var(--dsw-alias-state-success-primary,#16a34a)}
 .dwo-icon-bad{color:var(--dsw-alias-state-error-primary,#c22)}
 .dwo-icon-danger:hover:not(:disabled){color:var(--dsw-alias-state-error-primary,#c22)}
+.dwo-icon-primary{background:var(--dsw-alias-label-primary,#1f1e1d);color:var(--dsw-alias-bg-base,#fff)}
+.dwo-icon-primary:hover:not(:disabled){background:var(--dsw-alias-label-primary,#1f1e1d);color:var(--dsw-alias-bg-base,#fff);opacity:.88}
 .dwo-icon-busy{animation:dwo-spin .8s linear infinite}
 @keyframes dwo-spin{to{transform:rotate(360deg)}}
 /* 状态图标：无边框，纯指示 */
@@ -201,55 +204,25 @@ window.__ModuleLoader__.load({
   color:var(--dsw-alias-label-secondary,#6b6b6b)}
 .dwo-field-hint{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
 
-/* 单选卡片：选中靠左侧色条 + 圆点双重标识，色弱也能分辨 */
-.dwo-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;
-  align-items:stretch}
-.dwo-card{position:relative;display:flex;gap:10px;align-items:flex-start;text-align:left;
-  padding:12px 14px;box-sizing:border-box;font:inherit;cursor:pointer;
-  border:1px solid var(--dsw-alias-border-l4,rgba(127,127,127,.22));
-  border-radius:calc(var(--dsw-radius-md,8px) + 2px);
-  background:var(--dsw-alias-bg-layer-1,transparent);
-  transition:border-color .15s ease,background .15s ease,box-shadow .15s ease}
-.dwo-card:hover:not(:disabled):not(.dwo-card-on){
-  background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.06))}
-.dwo-card:focus-visible{outline:2px solid var(--dsw-alias-label-primary,#1f1e1d);outline-offset:2px}
-.dwo-card:disabled{opacity:.55;cursor:default}
-.dwo-card-on{border-color:var(--dsw-alias-label-primary,#1f1e1d);
-  background:color-mix(in srgb,var(--dsw-alias-label-primary,#1f1e1d) 5%,transparent);
-  box-shadow:inset 3px 0 0 var(--dsw-alias-label-primary,#1f1e1d)}
-.dwo-card-dot{flex:none;width:14px;height:14px;margin-top:2px;box-sizing:border-box;
-  border:1.5px solid var(--dsw-alias-border-l4,rgba(127,127,127,.5));border-radius:50%;
-  transition:border-color .15s ease,box-shadow .15s ease}
-.dwo-card-on .dwo-card-dot{border-color:var(--dsw-alias-label-primary,#1f1e1d);
-  box-shadow:inset 0 0 0 3px var(--dsw-alias-label-primary,#1f1e1d)}
-.dwo-card-body{display:grid;gap:3px;min-width:0}
-.dwo-card-title{font-size:13px;line-height:18px;font-weight:600;
-  color:var(--dsw-alias-label-primary,#1f1e1d)}
-.dwo-card-desc{font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
+/* 设置行：多个功能并排，标签在左、控件在右 */
+.dwo-settings{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.dwo-setting{display:flex;align-items:center;gap:7px}
+.dwo-setting-label{font-size:11px;line-height:22px;white-space:nowrap;
+  color:var(--dsw-alias-label-tertiary,#8a8a8a)}
 
-/* 开关行：整行可点，右侧滑动开关 */
-.dwo-toggle{display:flex;align-items:center;gap:12px;width:100%;text-align:left;
-  padding:12px 14px;box-sizing:border-box;font:inherit;cursor:pointer;
+/* 分段单选：紧凑的 pill 形态，高度只有 22px */
+.dwo-seg{display:inline-flex;padding:2px;gap:2px;box-sizing:border-box;
   border:1px solid var(--dsw-alias-border-l4,rgba(127,127,127,.22));
-  border-radius:calc(var(--dsw-radius-md,8px) + 2px);
-  background:var(--dsw-alias-bg-layer-1,transparent);
-  transition:background .15s ease,border-color .15s ease}
-.dwo-toggle:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.06))}
-.dwo-toggle:focus-visible{outline:2px solid var(--dsw-alias-label-primary,#1f1e1d);outline-offset:2px}
-.dwo-toggle:disabled{opacity:.55;cursor:default}
-.dwo-toggle-body{display:grid;gap:3px;flex:1;min-width:0}
-.dwo-toggle-title{font-size:13px;line-height:18px;font-weight:600;
-  color:var(--dsw-alias-label-primary,#1f1e1d)}
-.dwo-toggle-desc{font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
-.dwo-switch{flex:none;position:relative;width:36px;height:20px;border-radius:999px;
-  background:color-mix(in srgb,var(--dsw-alias-label-primary,#1f1e1d) 18%,transparent);
-  transition:background .18s ease}
-.dwo-toggle-on .dwo-switch{background:var(--dsw-alias-label-primary,#1f1e1d)}
-.dwo-switch-knob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
-  background:var(--dsw-alias-bg-base,#fff);box-shadow:0 1px 2px rgba(0,0,0,.18);
-  transition:transform .18s cubic-bezier(.2,.8,.3,1)}
-.dwo-toggle-on .dwo-switch-knob{transform:translateX(16px)}
-
+  border-radius:999px;background:var(--dsw-alias-bg-layer-3,rgba(127,127,127,.05))}
+.dwo-seg-b{height:22px;padding:0 11px;border:none;border-radius:999px;background:transparent;
+  font:inherit;font-size:12px;line-height:22px;cursor:pointer;white-space:nowrap;
+  color:var(--dsw-alias-label-secondary,#6b6b6b);
+  transition:background .12s ease,color .12s ease}
+.dwo-seg-b:hover:not(:disabled):not(.dwo-seg-on){color:var(--dsw-alias-label-primary,#1f1e1d)}
+.dwo-seg-b:focus-visible{outline:2px solid var(--dsw-alias-label-primary,#1f1e1d);outline-offset:1px}
+.dwo-seg-b:disabled{opacity:.5;cursor:default}
+.dwo-seg-on{background:var(--dsw-alias-label-primary,#1f1e1d);
+  color:var(--dsw-alias-bg-base,#fff);cursor:default}
 .dwo-notice-ok{color:var(--dsw-alias-state-success-primary,#16a34a)}
 `;
 
@@ -299,14 +272,16 @@ window.__ModuleLoader__.load({
       cross: 'M15 9l-6 6M9 9l6 6',
       // 横线：未测试/未知
       minus: 'M8 12h8',
-      // 从浏览器抓取
-      browser: 'M4 5h16v14H4zM4 9h16M7 7h.01M10 7h.01',
-      // 测速（秒表）
-      gauge: 'M12 14l4-4M12 20a8 8 0 100-16 8 8 0 00016zM4 12h2M18 12h2',
+      // 从浏览器抓取：带下载箭头的窗口，比"浏览器轮廓"更明确表达"抓取"
+      browser: 'M4 5h16v14H4zM4 9h16M7 7h.01M10 7h.01M12 11v5M9.5 13.5L12 16l2.5-2.5',
+      // 测试有效性：药丸 + 勾（"这一条通不通"），比秒表轮廓清晰
+      gauge: 'M4.5 12.5l4 4 6-9 5 5 5-5',
       // 刷新
       refresh: 'M20 11a8 8 0 10-2.3M4 13a8 8 0 1010 2.3M20 5v6h-6M4 19v-6h6',
       // 删除（垃圾桶）
       trash: 'M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6',
+      // 添加（加号）
+      plus: 'M12 5v14M5 12h14',
     };
 
     /** 单个图标。 */
@@ -392,61 +367,35 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 对话模式开关（Ask / Agent）。
+     * 紧凑的分段单选。
      *
-     * 切换后立刻生效：适配器每次请求都会重读配置，不需要重启 DSH。
-     * 因此这里不做"保存"按钮，点哪个就是哪个。
-     */
-    /**
-     * 单选卡片组：模式、亲和共用同一套视觉。
+     * 两个设置（对话模式、会话亲和）都用它，视觉一致，控件高度只有 22px。
      *
-     * 相比原来的分段按钮，卡片式的好处是能把每个选项的**效果**写在旁边——
-     * "agent 和 ask 到底有什么区别"正是用户最容易误解的地方，只给两个词
-     * 不够。选中态用左侧色条 + 勾选圆点双重标识，色弱用户也能分辨。
+     * 之前用过"大卡片 + 说明文字"的样式，但那个尺寸在设置页里过于抢眼——
+     * 这类开关的说明本来就是"点开才知道"的信息，不该占据主视觉。
+     * 现在改成标签 + 紧凑 pill，必要时用 title 提供补充说明。
      */
-    function RadioCards({ label, hint, value, options, busy, onChange }) {
-      return h('div', { className: 'dwo-field' }, [
-        h('div', { key: 'h', className: 'dwo-field-head' }, [
-          h('span', { key: 'l', className: 'dwo-field-label' }, label),
-          hint ? h('span', { key: 'i', className: 'dwo-field-hint' }, hint) : null,
-        ]),
-        h('div', { key: 'g', className: 'dwo-cards', role: 'radiogroup', 'aria-label': label },
-          options.map(option => {
-            const on = option.id === value;
-            return h('button', {
-              key: option.id,
-              type: 'button',
-              role: 'radio',
-              'aria-checked': on,
-              className: `dwo-card${on ? ' dwo-card-on' : ''}`,
-              onClick: () => { if (!on) onChange(option.id); },
-              disabled: busy,
-            }, [
-              h('span', { key: 'dot', className: 'dwo-card-dot' }),
-              h('span', { key: 'body', className: 'dwo-card-body' }, [
-                h('span', { key: 't', className: 'dwo-card-title' }, option.title),
-                h('span', { key: 'd', className: 'dwo-card-desc' }, option.desc),
-              ]),
-            ]);
-          })),
-      ]);
-    }
-
-    /** 模型选择器开关：本质是 checkbox + 一段说明，不与单选组混用。 */
-    function ToggleRow({ label, desc, checked, busy, onChange }) {
-      return h('button', {
-        type: 'button',
-        className: `dwo-toggle${checked ? ' dwo-toggle-on' : ''}`,
-        role: 'switch',
-        'aria-checked': checked,
-        onClick: () => onChange(!checked),
-        disabled: busy,
-      }, [
-        h('span', { key: 'b', className: 'dwo-toggle-body' }, [
-          h('span', { key: 't', className: 'dwo-toggle-title' }, label),
-          h('span', { key: 'd', className: 'dwo-toggle-desc' }, desc),
-        ]),
-        h('span', { key: 's', className: 'dwo-switch' }, h('span', { className: 'dwo-switch-knob' })),
+    function SegmentedRadio({ label, value, options, busy, onChange, title }) {
+      return h('div', { className: 'dwo-setting', title }, [
+        h('span', { key: 'l', className: 'dwo-setting-label' }, label),
+        h('div', {
+          key: 'g',
+          className: 'dwo-seg',
+          role: 'radiogroup',
+          'aria-label': label,
+        }, options.map(option => {
+          const on = option.id === value;
+          return h('button', {
+            key: option.id,
+            type: 'button',
+            role: 'radio',
+            'aria-checked': on,
+            className: `dwo-seg-b${on ? ' dwo-seg-on' : ''}`,
+            onClick: () => { if (!on) onChange(option.id); },
+            disabled: busy,
+            title: option.desc || option.title || option.label,
+          }, option.label);
+        })),
       ]);
     }
 
@@ -557,10 +506,15 @@ window.__ModuleLoader__.load({
         setError(null);
         try {
           const value = await request(BROWSER_TOKEN_PATH, { method: 'POST' });
-          if (value?.added) {
-            setAutoResult({ kind: 'ok', text: text.autoFetchOk(value.browser) });
+          if (value?.added > 0) {
+            // 一次可能读到多个有效 token（本机多个 Chrome 账号都登录过）
+            const n = value.added;
+            setAutoResult({
+              kind: 'ok',
+              text: n > 1 ? `已从浏览器添加 ${n} 个 Token。` : `已从 ${value.browser} 添加 Token。`,
+            });
             setState({ ...(state || {}), credentials: value.credentials });
-          } else if (value?.alreadyPresent) {
+          } else if (value?.alreadyPresent > 0) {
             // 读到的 token 已在池里：不是错误，但也确实没新增。
             // 必须如实说，否则用户会以为添加成功却在列表里找不到。
             setAutoResult({ kind: 'ok', text: text.autoFetchPresent });
@@ -682,27 +636,31 @@ window.__ModuleLoader__.load({
 
         ...notices,
 
-        h(RadioCards, {
-          key: 'mode',
-          label: text.modeTitle,
-          hint: text.modeHint,
-          value: mode,
-          busy,
-          onChange: changeMode,
-          options: [
-            { id: 'agent', title: text.modeAgent, desc: text.modeAgentDesc },
-            { id: 'ask', title: text.modeAsk, desc: text.modeAskDesc },
-          ],
-        }),
+        h('div', { key: 'settings', className: 'dwo-settings' }, [
+          h(SegmentedRadio, {
+            key: 'mode',
+            label: text.modeTitle,
+            value: mode,
+            busy,
+            onChange: changeMode,
+            options: [
+              { id: 'agent', label: text.modeAgent, desc: text.modeAgentDesc },
+              { id: 'ask', label: text.modeAsk, desc: text.modeAskDesc },
+            ],
+          }),
 
-        h(ToggleRow, {
-          key: 'affinity',
-          label: text.affinityTitle,
-          desc: affinity ? text.affinityOnDesc : text.affinityOffDesc,
-          checked: affinity,
-          busy,
-          onChange: changeAffinity,
-        }),
+          h(SegmentedRadio, {
+            key: 'affinity',
+            label: text.affinityTitle,
+            value: affinity ? 'on' : 'off',
+            busy,
+            onChange: next => changeAffinity(next === 'on'),
+            options: [
+              { id: 'on', label: text.affinityOn, desc: text.affinityOnDesc },
+              { id: 'off', label: text.affinityOff, desc: text.affinityOffDesc },
+            ],
+          }),
+        ]),
 
         credentials.items.length === 0
           ? h('p', { key: 'empty', className: 'dwo-notice' }, text.empty)
@@ -720,13 +678,14 @@ window.__ModuleLoader__.load({
             autoComplete: 'off',
             spellCheck: false,
           }),
-          h('button', {
-            key: 'b',
-            type: 'button',
-            className: 'dwo-btn dwo-btn-primary',
+          h(IconButton, {
+            key: 'add',
+            icon: 'plus',
+            className: 'dwo-icon-primary',
+            title: text.add,
             onClick: submit,
             disabled: busy || !token.trim(),
-          }, text.add),
+          }),
           h(IconButton, {
             key: 'auto',
             icon: 'browser',
