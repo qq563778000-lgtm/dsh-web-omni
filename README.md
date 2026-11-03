@@ -1,26 +1,8 @@
 # dsh-web-omni
 
-把 **OmniAPI 的转发能力内嵌进 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）** 的插件。
+把 **DeepSeek Web** 接进 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的插件。
 
-**装完即用**：安装后在 DSH 设置页填入上游 DeepSeek Web Token，
-模型选择器里就能选到 `omni` 开始对话。不需要另外启动 OmniAPI，
-不需要填服务地址，不需要编辑配置文件。
-
-## 它是什么
-
-OmniAPI 把一个 DeepSeek Web 账号池包装成 OpenAI 兼容 API。本插件把它的
-转发内核（凭据池、PoW 求解、上游流解析）**整份随插件分发**，在 DSH 进程内
-直接运行——因此没有"先起服务再连过去"这一步。
-
-```
-DSH 进程
-└── dsh-web-omni 插件
-    ├── lib/adapter.js       DSH 的 LlmAdapter 契约实现
-    ├── lib/runtime.js       内核引导 + 配置隔离
-    ├── lib/credentials.js   设置页的凭据读写
-    ├── lib/routes.js        设置页的本机状态端点
-    └── kernel/              ← 从主项目 src/ 同步的转发内核
-```
+**装完即用**：装好后填一个 Token，模型选择器里就能选到 `dsh-web-omni` 开始对话。不用另起服务，不用填地址，不用改配置文件。
 
 ## 安装
 
@@ -31,264 +13,144 @@ dsh plugin --profile <profile> add github:qq563778000-lgtm/dsh-web-omni
 `<profile>` 是你的 DSH profile 名（桌面端通常是 `desktop`，Web 端是 `web`）。
 安装后**重启 DSH**。
 
-装好后打开 DSH 设置页，找到 **OmniAPI** 一节：
+然后打开 DSH 设置页，找到 **dsh-web-omni** 一节，粘贴 Token 点「添加」即可。
+之后在模型选择器里选 `deepseek-flash`（来源：dsh-web-omni）开始对话。
 
-1. 粘贴 DeepSeek Web Token，点「添加」
-2. 点「测试全部凭据」确认可用
-3. 在模型选择器里选 `deepseek-flash`（来源：dsh-web-omni）开始对话
+## 设置页一览
 
-### 怎么拿 Token
+设置页从上到下：
 
-插件只接受 Token（不再支持账号密码：上游登录接口被 WAF 拦截，成功率
-取决于出口 IP，比复制 Token 更不可靠，且密码要落盘）。
+| 区域 | 作用 |
+|---|---|
+| 统计 | 可用 / 总数 / 已禁用三个计数 |
+| 对话模式 / 会话亲和 | 两个开关并排，决定"发给上游什么"和"怎么省 token"，见下方 |
+| 凭据列表 | 每行一条凭据，带状态图标、测试、删除 |
+| 添加区 | 粘贴 Token，或点云图标从浏览器自动获取 |
+| 如何获取 Token | 折叠区，含手动获取步骤 |
+| 刷新 | 重新读取凭据池状态 |
 
-设置页的「如何获取 Token」里有完整步骤，核心是：
+### 凭据列表
+
+每行显示掩码后的 Token（`abcdef...7890`），右侧三个图标：
+
+| 图标 | 作用 |
+|---|---|
+| ✓ / ✗ / — | 状态：可用 / 失效 / 未测试 |
+| 药丸 | 测试这一条是否还能用（只测这一条，不影响其它） |
+| 垃圾桶 | 删除 |
+
+鼠标悬停会显示对应说明。
+
+### 添加区
+
+| 元素 | 作用 |
+|---|---|
+| 输入框 | 粘贴 Token |
+| ＋ | 添加 |
+| ☁ | 从浏览器自动获取 |
+
+## 从浏览器获取 Token
+
+点云图标，插件会读取本机浏览器的登录态，**自动把还能用的都加进列表**。
+
+- 扫本机所有浏览器、所有账号配置（Chrome 的多个 Profile、Edge 等），多个账号
+  都登录过也不会漏
+- 每一条都会先验证是否还有效，失效的不会写进列表
+- 只读不改，不会动你的浏览器数据
+
+**一个前提**：Chrome 在页面打开时会把浏览器里的数据留在内存里、还没写到磁盘。
+所以如果刚登录完就读不到 —— **把 chat.deepseek.com 那个标签页关掉（Ctrl+W）**
+再点一次即可。不必重启浏览器，登录态也不会丢。
+
+### 手动获取
+
+设置页的「如何获取 Token」里有完整步骤：
 
 1. 浏览器打开 `chat.deepseek.com` 并登录
 2. 按 F12 → Console
 3. 粘贴设置页给出的那段命令并回车，Token 会自动进剪贴板
 
-命令会先试已知的存储键，找不到就扫描 localStorage 里形如 Token 的值；
-命中多个时会全部列出来让你自己挑，不会替你选。
-
-如果命令提示找不到，用最通用的办法：F12 → Network → 任选一个 `api`
-请求 → 复制 `Authorization` 头里 `Bearer ` 之后的部分。
+命令找不到时用最通用的办法：F12 → Network → 任选一个 `api` 请求 → 复制
+`Authorization` 头里 `Bearer ` 之后的部分。
 
 Token 等同于账号登录态，只保存在本机，不要分享。
 
-### 前置条件
+## 对话模式
 
-- DeepSeek Harness `0.2.1-rc.2` 及以上（`rc.3` 可用）
-- Node.js `^22.19.0 || >=24.0.0`
-- 一个可用的 DeepSeek Web Token（插件不提供）
+设置页第一个开关，决定发给上游的内容。切换即时生效，不用重启。
 
-## 更新
-
-```sh
-dsh plugin --profile <profile> add github:qq563778000-lgtm/dsh-web-omni
-```
-
-重新执行安装命令即可升级到最新版。
-
-## 与"用 pi-ai 网关连 OmniAPI"的区别
-
-DSH 内置的 `dsh-llm-pi-ai` 支持 `api: openai-completions` 指向任意
-OpenAI 兼容网关，纯配置就能连上 OmniAPI。本插件的增量在于：
-
-| | pi-ai 网关配置 | 本插件 |
-|---|---|---|
-| 需要 OmniAPI 独立运行 | 是 | **否** |
-| 需要手填地址与 Key | 是 | **否** |
-| 读取模型能力元数据 | 忽略扩展字段 | 直接采用 |
-| 分离 `reasoning_content` | 需试探 `compat` | 显式映射 |
-| 在 DSH 里看凭据死活 | ❌ | ✅ 设置页 |
-
-## 配置
-
-一般不需要改。需要覆盖时在 profile 的 `cordis.patch.yml`：
-
-```yaml
-- id: omni
-  config:
-    dataDir: C:/Users/<you>/.dsh/plugin-data/dsh-web-omni
-    providerId: dsh-web-omni
-    providerName: dsh-web-omni
-    contextWindow: 1048576
-    maxOutputTokens: 65536
-    kernelTimeoutMs: 60000
-```
-
-| 字段 | 默认值 | 说明 |
-|------|--------|------|
-| `dataDir` | `<DSH_HOME>/plugin-data/dsh-web-omni` | 凭据与配置的落盘位置 |
-| `providerId` | `dsh-web-omni` | 路由名（模型 id 形如 dsh-web-omni/deepseek-flash） |
-| `providerName` | `dsh-web-omni` | 选择器展示名 |
-| `contextWindow` | `1048576` | 上报给 DSH 的上下文长度 |
-| `maxOutputTokens` | `65536` | 上报给 DSH 的输出上限 |
-| `kernelTimeoutMs` | `60000` | 首次对话等待凭据池就绪的上限 |
-
-## 数据与安全
-
-- 凭据只存在 `dataDir/config.json`，**不写入 DSH 的 profile 配置**
-- 插件会强制把内核的配置路径指向自己的 `dataDir`，不会读到主项目
-  OmniAPI 的 `.env` / `config.json`（避免两套系统共用账号）
-- 设置页与 HTTP 响应只返回掩码（`abcdef...7890`），不提供"查看明文"入口
-- 状态端点仅接受本机请求，并校验 Host / Origin 防 DNS rebinding
-
-## 使用须知
-
-本插件把你**自己的** DeepSeek Web 账号（或 Token）接入 DSH，不提供任何凭据。
-
-发布前请了解：
-
-- **它使用的是 Web 端接口，不是官方 API。** 上游的接口、风控与限额随时可能
-  变化，插件可能因此失效。这不是本插件能保证的部分。
-- **自动化调用 Web 端可能违反上游服务条款**，存在账号被限流或封禁的可能。
-  请自行评估，风险自负。
-- 不要把账号密码或 Token 分享给他人；不要把本插件部署成对外提供的公共
-  服务（那会把你的账号暴露给不受控的使用量）。
-- 凭据只存在你自己机器的 `dataDir` 下，插件不会上传到任何地方。
-
-如果需要有 SLA 保障、可商用授权的调用方式，请使用 DeepSeek 官方 API。
-
-## 来源
-
-内核（`kernel/`）来自 OmniAPI 项目，由 `scripts/sync-kernel.mjs` 同步。
-本仓库是它的独立 DSH 插件版本，可单独安装使用，不需要另行运行 OmniAPI。
-
-## 测试
-
-```sh
-npm test
-```
-
-其中 `contract.test.js` 用**真实的** `@deepseek-ai/dsh-llm` 的 `LlmRuntime`
-装载本适配器，校验 DSH 未文档化的运行时约束（`provider` 必须等于注册路由、
-`context` 必须是 `{ contextWindow }`、`defaultMaxTokens` 等）。
-未安装 `@deepseek-ai/dsh-llm` 时该组自动跳过，不影响其余用例。
-
-`dsh-llm` 与 `cordis` 只存在于 DSH 的 asar 里，npm 装不上。开发时可先解出
-来跑真实的契约测试：
-
-```sh
-node scripts/extract-cordis.mjs   # 解到 node_modules/@deepseek-ai/ 下
-npm test
-```
-
-`compatibility.test.js` 则是不依赖宿主、把插件对外契约逐条列出来断言
-（入口导出面、适配器契约方法、模型目录字段、chunk 结构、终止原因映射），
-作为发布前的闸门。
-
-## 对话模式：Agent / Ask
-
-设置页有模式开关，切换即时生效，无需重启：
-
-| 模式 | 发给上游的内容 |
+| 模式 | 效果 |
 |---|---|
-| **Agent**（默认） | 系统提示 + 全部工具声明 + 工具说明 + 完整历史 |
-| **Ask** | **只有用户说的话**。不带 system、不带工具、不带任何注入 |
+| **Agent**（默认） | 完整能力。模型知道自己是个编码助手，可以读写文件、执行命令、跑多步任务 |
+| **Ask** | **原生对话**。只发送你说的话，不带任何系统设定与工具声明，模型就是 DeepSeek 本来的样子 |
 
-### Ask 到底去掉了什么
+Ask 与"只是不给工具"不同：它连 DSH 平时附加的内容都不发，模型不知道自己
+是编码助手。实测同一句「你是谁？」：
 
-DSH 会在请求里夹带大量非对话内容，实测一輪约 25K 字符：
+- Agent → "我是你的编程助手，可以帮你读代码、查文件、改代码……"
+- Ask → "我是 DeepSeek，由深度求索公司创造的 AI 助手。"
 
-| 内容 | 大小 | 角色 |
-|---|---|---|
-| 编码助手身份 + 工具使用规则 | ~5.7K | system |
-| `<system-reminder>` 技能清单 | ~7.7K | user |
-| `<hindsight_knowledge>` 知识库 | ~7.1K | user |
-| `Current runtime context` | ~0.7K | user |
-| `Time sampled while preparing turn` | ~0.3K | user |
-
-注意后四项都挂在 **user 角色**下——只过滤 system 是不够的，必须按内容特征
-识别。Ask 模式把这些整条丢弃（不截断、不摘要，就是不发送），只保留用户
-自己打的字和真实的 assistant 对话历史。
-
-实测对比（同一问题"你是谁？"）：
-
-- **Agent** → "我是你的编程助手，可以帮你读代码、查文件、改代码……"
-- **Ask** → "我是 DeepSeek，由深度求索公司创造的 AI 助手。"
-
-后者说明模型完全没收到编码助手的设定——这正是 Ask 的预期。
-
-### 与"禁用工具"的区别
-
-早期实现只清空工具声明，模型仍会罗列工具、甚至输出调用标记。Ask 的语义
-是**原生对话**：连 `[User]: ` 这类角色前缀都不加，直接发送纯文本。
-
-## 思考模式
-
-上游 DeepSeek Web 只接受「开/关」一个布尔，没有 effort 分级。因此插件只
-声明两档，与上游的真实能力一致：
-
-| 档位 | 行为 |
-|---|---|
-| 关闭思考 | 不带 thinking 参数 |
-| 深度思考 | 开启 thinking |
-
-其余档位（medium / xhigh / max 等）曾在 UI 上出现过，但上游无法区分它们，
-属于虚假的可选性，已全部移除。若客户端仍送来旧档位，会被按「开启思考」
-处理——用户选了思考却没思考，比多思考更糟。
+想单纯问答、不想它动你的文件时，切到 Ask 即可。
 
 ## 会话亲和
 
-设置页可单独开关。开启时同一对话复用上游 chat_session，只发送增量内容，
-避免每轮重发完整历史（实测长会话可从 276K 字符降到约 19K）。关闭时每轮
-重发全量，兼容性最好但输入成本更高。
+设置页第二个开关。
 
-## 从浏览器自动获取 Token
+| 状态 | 效果 |
+|---|---|
+| **开**（默认） | 同一段对话复用上游会话，只发新增的部分。长对话明显更省、更快 |
+| **关** | 每轮都重发完整历史。最兼容，但输入成本更高 |
 
-设置页有「从浏览器获取」按钮，扫描本机 Chrome / Edge 等浏览器的登录态，
-读到后自动入库（**会先验证有效性**，失效的不会写入）。
+长对话建议保持开启。
 
-### 读取范围
+## 思考模式
 
-扫描**本机所有浏览器、所有 profile、所有历史记录**，逐个问上游"这个还能用
-吗"，把全部有效的都加入凭据池——本机可能有多个 Chrome 账号都登录过
-DeepSeek，只加一个会漏掉其它账号。
+模型选择器旁的思考档位只有两档：**关闭思考** 与 **深度思考**。
 
-实测本机 Chrome 扫到 10 个候选 token（Profile 1 与 Profile 2 各若干），
-逐个验证后只有 2 个有效，其余返回 `40003`。这说明逐个验证不可省：按
-"哪个文件最新"取第一个必然拿到废值。
+上游只支持开关思考，没有更细的强度分级 —— 所以这里也只给两档，
+不做看起来能选、实际没区别的假选项。
 
-### 读取时必须限定 origin
+## 数据与安全
 
-同一个 `.ldb` 文件里可能同时存在多个 origin 的同名键：
+- Token 只存在本机，不上传到任何地方
+- 设置页与接口响应只返回掩码，没有"查看明文"的入口
+- 不读取、不改动你浏览器的任何数据
 
-```
-_https://chat.deepseek.com     userToken = F6E8xvVz…  ✓ 有效
-_https://platform.deepseek.com userToken = ddStdeXy…  ✗ 已失效
-```
+## 使用须知
 
-只按 key 名匹配、且后来者覆盖前者，最终拿到的是失效那条——表现为"明明
-登录了却读不到"。因此解析会先定位 origin 再找键名。
+本插件使用 DeepSeek **Web 端**接口，不是官方 API。发布前请了解：
 
-### 读的是 Local Storage，不是 Cookie
+- **上游的接口、风控与限额随时可能变化**，插件可能因此失效。这不是本插件能
+  保证的部分。
+- **自动化调用 Web 端可能违反上游服务条款**，存在账号被限流或封禁的可能。
+  请自行评估，风险自负。
+- 不要把 Token 分享给他人；不要把本插件部署成对外提供的公共服务
+  （那会把你的账号暴露给不受控的使用量）。
 
-DeepSeek Web 把登录态存在 **localStorage** 的 `userToken` / `userTokens`，
-而不是 cookie。这个区别决定了可行性：
+需要 SLA 保障、可商用授权的调用方式，请使用 DeepSeek 官方 API。
 
-| 存储 | 加密 | 能否读取 |
-|---|---|---|
-| Cookie | Chrome/Edge 127+ 用 App-Bound Encryption（`v20`） | ❌ 密钥由浏览器自身身份保管，同用户也取不到 |
-| **Local Storage** | **不加密**（Chromium LevelDB，明文键值） | ✅ 可直接读取 |
+## 常见问题
 
-实测（2026-11，Chrome 156）：用 DPAPI 解出的 master key 解 40 条真实 cookie，
-成功 0 条；而同机的 `Local Storage/leveldb/024783.ldb` 里直接读出了完整登录态：
+**模型选择器里看不到 dsh-web-omni**
+安装后要重启 DSH。凭据为空时插件不会产生任何上游请求，但模型来源仍会显示。
 
-```
-{"MTUwMTc4ODMzOTIwNzgyMzM2MA==":{"token":"NUcrszY1...","expiration":"2027-05-07"}}
-```
+**云图标点了没反应 / 提示数据没落盘**
+把 chat.deepseek.com 的标签页关掉（Ctrl+W）再点。若仍不行，看浏览器里是否
+真的登录过 DeepSeek。
 
-### 一个必须知道的前提：数据要落盘
+**凭据显示失效（✗）**
+上游判定该 Token 已过期。重新登录 DeepSeek、关掉标签页让数据落盘，再点一次
+云图标即可。
 
-Chrome 在页面**打开时**会把 localStorage 的写入留在内存 memtable 里，
-不会立刻写到磁盘。因此：
+**对话报"消息发送过于频繁"**
+上游限流。稍等片刻重试；插件也会自动退避重试几次。
 
-- 刚登录完就点按钮 → 读不到（按钮会提示"已登录但数据还没写入磁盘"）
-- **关闭 chat.deepseek.com 那个标签页**（Ctrl+W）→ 数据落盘 → 再点即可
+## 兼容性与已知限制
 
-不需要重启浏览器，登录态也不会丢。
-
-### 实现说明
-
-LevelDB 表文件的长度字段格式在不同 Chromium 版本间变过（实测是 7 字节，
-不是标准的 4 或 8 字节，也不是 varint）。因此解析不依赖长度字段，而是
-**结构推断**：找到 key 后，在紧随其后的小窗口里定位值的起始字符
-（`{` / `[` / `"`），再按"到下一个控制字符"确定结尾。
-
-## 已知限制
-
-- 在 `dsh 0.2.1-rc.2` 与 `rc.3` 上验证过契约；更高版本需实机确认。
-- 上游 DeepSeek Web 只有思考的**开/关**，没有 effort 分级。
-  插件声明 `off`/`medium`/`high`/`xhigh`/`max` 五档，内部把非 `off` 的档位
-  统一映射为「开启思考」——档位可选，但强度无差异。
-- 长会话（上行超过约 150K 字符）会自动压缩较早的工具结果并换新会话，
-  以避开上游的静默空响应。
-- 图片仅支持 URL 或 base64 data；本地附件引用需要宿主附件服务内联。
-- 上游若改变 `create_pow_challenge` 或 SSE 格式，需重新同步转发内核。
+- 已验证的 DSH 版本：`0.2.1-rc.2`、`rc.3`；更高版本需实机确认
+- 图片支持 URL 与 base64
+- 对话特别长时插件会自动精简早期内容并接续，不至于中途卡住
 
 ## 许可
 
 MIT，见 [LICENSE](./LICENSE)。
-

@@ -43,7 +43,7 @@ function makeRuntime() {
 
 test('DSH LlmRuntime 能注册本适配器并通过模型发现校验', { skip }, async () => {
   const { runtime } = makeRuntime();
-  const adapter = new OmniAdapter({ providerId: 'omni', providerName: 'OmniAPI' });
+  const adapter = new OmniAdapter({ providerId: 'dsh-web-omni', providerName: 'dsh-web-omni' });
 
   // 覆盖网络：直接给适配器喂一份真实形状的 /v1/models 数据。
   // 内嵌版的 listModels 不访问网络，直接使用真实实现。

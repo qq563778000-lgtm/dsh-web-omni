@@ -1,13 +1,14 @@
 {
   "name": "dsh-web-omni",
   "version": "0.2.0",
-  "description": "DSH provider 插件：把 DeepSeek Web 转发能力内嵌进 DeepSeek Harness，装完填账号即可用",
+  "description": "DSH provider 插件：把 DeepSeek Web 接入 DeepSeek Harness，装完填 Token 即可用",
   "keywords": [
     "dsh",
     "dsh-plugin",
+    "deepseek",
     "llm",
-    "omni",
-    "openai-compatible"
+    "web-token",
+    "chat"
   ],
   "license": "MIT",
   "type": "module",
