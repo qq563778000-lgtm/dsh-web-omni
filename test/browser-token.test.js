@@ -29,9 +29,9 @@ test('listAvailableBrowsers 返回结构稳定', () => {
   }
 });
 
-test('findBrowserToken 在没有登录态时优雅返回，不抛异常', () => {
+test('findBrowserToken 在没有登录态时优雅返回，不抛异常', async () => {
   let result;
-  assert.doesNotThrow(() => { result = findBrowserToken(); });
+  await assert.doesNotReject(async () => { result = await findBrowserToken(); });
 
   assert.equal(typeof result.ok, 'boolean');
   assert.ok(Array.isArray(result.tried), '应报告尝试过哪些浏览器');
@@ -52,16 +52,16 @@ test('findBrowserToken 在没有登录态时优雅返回，不抛异常', () => 
   }
 });
 
-test('成功时返回的 token 不含空白字符', () => {
-  const result = findBrowserToken();
+test('成功时返回的 token 不含空白字符', async () => {
+  const result = await findBrowserToken();
   if (!result.ok) return;   // 本机未登录，跳过
   assert.equal(typeof result.token, 'string');
   assert.ok(result.token.length >= 20);
   assert.ok(!/\s/.test(result.token), 'token 里不应有空白');
 });
 
-test('浏览器启用 App-Bound 加密时，reason 必须是 encrypted-by-browser', () => {
-  const result = findBrowserToken();
+test('浏览器启用 App-Bound 加密时，reason 必须是 encrypted-by-browser', async () => {
+  const result = await findBrowserToken();
   if (result.ok) return;    // 真读到了就不用检查失败原因
 
   // 本机 Chrome/Edge 156 全部使用 v20 + ABE。若这里拿到的是
@@ -72,5 +72,33 @@ test('浏览器启用 App-Bound 加密时，reason 必须是 encrypted-by-browse
     assert.equal(result.reason, 'encrypted-by-browser',
       '整体结果也要标成加密限制，设置页据此给出正确提示');
     assert.ok(result.browser, '应指出是哪个浏览器');
+  }
+});
+
+test('传入 validate 时，只返回通过验证的候选', async () => {
+  // 模拟"第一个候选失效、第二个有效"的情况——真实环境里多个 Chrome 账号
+  // 各自留有历史 token，失效的常常排在前面。只取第一个必然拿到废值。
+  const seen = [];
+  const result = await findBrowserToken({
+    validate: async (token) => {
+      seen.push(token);
+      return token.endsWith('VALID');
+    },
+  });
+
+  assert.ok(seen.length >= 1, '应逐个验证候选');
+  if (result.ok) {
+    assert.ok(result.token.endsWith('VALID'), '返回的必须是验证通过的 token');
+  }
+});
+
+test('候选全部失效时，reason 是 stale', async () => {
+  const result = await findBrowserToken({ validate: async () => false });
+  if (result.ok) return;   // 有 cookie 兜底路径时可能仍成功
+
+  const stale = result.tried.filter(entry => entry.reason === 'stale');
+  if (stale.length > 0) {
+    assert.equal(result.reason, 'stale',
+      '读到了记录但全部失效，应报告 stale 而非 not-found');
   }
 });
