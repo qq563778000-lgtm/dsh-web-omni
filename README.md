@@ -147,6 +147,18 @@ npm test
 `context` 必须是 `{ contextWindow }`、`defaultMaxTokens` 等）。
 未安装 `@deepseek-ai/dsh-llm` 时该组自动跳过，不影响其余用例。
 
+`dsh-llm` 与 `cordis` 只存在于 DSH 的 asar 里，npm 装不上。开发时可先解出
+来跑真实的契约测试：
+
+```sh
+node scripts/extract-cordis.mjs   # 解到 node_modules/@deepseek-ai/ 下
+npm test
+```
+
+`compatibility.test.js` 则是不依赖宿主、把插件对外契约逐条列出来断言
+（入口导出面、适配器契约方法、模型目录字段、chunk 结构、终止原因映射），
+作为发布前的闸门。
+
 ## 对话模式：Agent / Ask
 
 设置页有模式开关，切换即时生效，无需重启：
@@ -184,6 +196,20 @@ DSH 会在请求里夹带大量非对话内容，实测一輪约 25K 字符：
 早期实现只清空工具声明，模型仍会罗列工具、甚至输出调用标记。Ask 的语义
 是**原生对话**：连 `[User]: ` 这类角色前缀都不加，直接发送纯文本。
 
+## 思考模式
+
+上游 DeepSeek Web 只接受「开/关」一个布尔，没有 effort 分级。因此插件只
+声明两档，与上游的真实能力一致：
+
+| 档位 | 行为 |
+|---|---|
+| 关闭思考 | 不带 thinking 参数 |
+| 深度思考 | 开启 thinking |
+
+其余档位（medium / xhigh / max 等）曾在 UI 上出现过，但上游无法区分它们，
+属于虚假的可选性，已全部移除。若客户端仍送来旧档位，会被按「开启思考」
+处理——用户选了思考却没思考，比多思考更糟。
+
 ## 会话亲和
 
 设置页可单独开关。开启时同一对话复用上游 chat_session，只发送增量内容，
@@ -192,10 +218,30 @@ DSH 会在请求里夹带大量非对话内容，实测一輪约 25K 字符：
 
 ## 从浏览器自动获取 Token
 
-## 从浏览器自动获取 Token
-
 设置页有「从浏览器获取」按钮，扫描本机 Chrome / Edge 等浏览器的登录态，
 读到后自动入库（**会先验证有效性**，失效的不会写入）。
+
+### 读取范围
+
+扫描**本机所有浏览器、所有 profile、所有历史记录**，逐个问上游"这个还能用
+吗"，把全部有效的都加入凭据池——本机可能有多个 Chrome 账号都登录过
+DeepSeek，只加一个会漏掉其它账号。
+
+实测本机 Chrome 扫到 10 个候选 token（Profile 1 与 Profile 2 各若干），
+逐个验证后只有 2 个有效，其余返回 `40003`。这说明逐个验证不可省：按
+"哪个文件最新"取第一个必然拿到废值。
+
+### 读取时必须限定 origin
+
+同一个 `.ldb` 文件里可能同时存在多个 origin 的同名键：
+
+```
+_https://chat.deepseek.com     userToken = F6E8xvVz…  ✓ 有效
+_https://platform.deepseek.com userToken = ddStdeXy…  ✗ 已失效
+```
+
+只按 key 名匹配、且后来者覆盖前者，最终拿到的是失效那条——表现为"明明
+登录了却读不到"。因此解析会先定位 origin 再找键名。
 
 ### 读的是 Local Storage，不是 Cookie
 
