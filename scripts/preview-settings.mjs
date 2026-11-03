@@ -91,20 +91,23 @@ const BODY = `
   <ul class="dwo-list">
     <li class="dwo-row">
       <span class="dwo-label">+U7ZgprKcckU…</span>
-      <span class="dwo-badge dwo-badge-ok">可用</span>
-      <button class="dwo-btn dwo-btn-link">删除</button>
+      <span class="dwo-state dwo-state-ok"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
+      <button class="dwo-icon" title="测试有效性"><svg viewBox="0 0 24 24"><path d="M12 14l4-4M12 20a8 8 0 100-16 8 8 0 00016zM4 12h2M18 12h2"/></svg></button>
+      <button class="dwo-icon dwo-icon-danger" title="删除"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg></button>
     </li>
     <li class="dwo-row">
       <span class="dwo-label">vo4x8Wjy2wpB…</span>
       <span class="dwo-err">错误 5</span>
-      <span class="dwo-badge dwo-badge-off">已禁用</span>
-      <button class="dwo-btn dwo-btn-link">删除</button>
+      <span class="dwo-state dwo-state-bad"><svg viewBox="0 0 24 24"><path d="M15 9l-6 6M9 9l6 6"/></svg></span>
+      <button class="dwo-icon" title="测试有效性"><svg viewBox="0 0 24 24"><path d="M12 14l4-4M12 20a8 8 0 100-16 8 8 0 00016zM4 12h2M18 12h2"/></svg></button>
+      <button class="dwo-icon dwo-icon-danger" title="删除"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg></button>
     </li>
   </ul>
 
   <div class="dwo-add">
     <input class="dwo-input" placeholder="粘贴 DeepSeek Web Token" />
     <button class="dwo-btn dwo-btn-primary">添加</button>
+    <button class="dwo-icon" title="从浏览器获取 Token"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 9h16M7 7h.01M10 7h.01"/></svg></button>
   </div>
 
   <details class="dwo-help" open>
@@ -125,14 +128,8 @@ const BODY = `
   </details>
 
   <div class="dwo-actions">
-    <button class="dwo-btn">测试全部凭据</button>
-    <button class="dwo-btn">刷新</button>
+    <button class="dwo-icon" title="刷新"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 10-2.3M4 13a8 8 0 1010 2.3M20 5v6h-6M4 19v-6h6"/></svg></button>
   </div>
-
-  <ul class="dwo-test">
-    <li class="dwo-test-ok">+U7ZgprKcckU… — 有效</li>
-    <li class="dwo-test-bad">vo4x8Wjy2wpB… — 无效（Token invalid (40003)）</li>
-  </ul>
 </div>
 `;
 

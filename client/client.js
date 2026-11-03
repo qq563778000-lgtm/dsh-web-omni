@@ -42,10 +42,10 @@ window.__ModuleLoader__.load({
       tokenPlaceholder: '粘贴 DeepSeek Web Token',
       add: '添加',
       remove: '删除',
-      testAll: '测试全部凭据',
-      testing: '测试中…',
+      testOne: '测试有效性',
+      notTested: '未测试',
       reload: '刷新',
-      empty: '还没有凭据。添加一个 Token 后，即可在模型选择器里选 omni 开始对话。',
+      empty: '还没有凭据。添加 Token 后即可开始对话。',
       notReady: '凭据池尚未就绪，首次对话时会自动初始化。',
       valid: '有效',
       invalid: '无效',
@@ -64,19 +64,19 @@ window.__ModuleLoader__.load({
       modeAsk: 'Ask',
       modeAskDesc: '原生对话，只发你说的话，不带任何提示与注入。',
       affinityTitle: '会话亲和',
-      affinityDesc: '同一对话复用上游会话，只发增量、不重复发送历史，更长会话更省更快。',
       affinityOnDesc: '同一对话复用上游会话，只发增量内容。',
       affinityOffDesc: '每轮重发完整历史，最兼容但输入成本更高。',
-      autoFetch: '从浏览器获取',
+      autoFetch: '从浏览器获取 Token',
       autoFetching: '正在读取…',
-      autoFetchOk: (browser) => `已从 ${browser} 读取并添加 Token。`,
+      autoFetchOk: (browser) => `已从 ${browser} 添加 Token。`,
+      autoFetchPresent: '该 Token 已在列表中。',
       autoFetchFail: '未能从浏览器读到 Token。',
-      autoFetchPendingTitle: '已登录，但数据还没写入磁盘',
-      autoFetchPending: 'Chrome 在页面打开时会把 localStorage 的写入留在内存里，尚未落盘。请**关闭 chat.deepseek.com 那个标签页**（Ctrl+W），再点一次「从浏览器获取」即可。登录态不会丢失。',
-      autoFetchNoLoginTitle: '没有在浏览器里找到 DeepSeek 的登录态',
-      autoFetchNoLogin: '请先在浏览器登录 chat.deepseek.com 后重试。若刚登录过，关闭该标签页让数据落盘再点一次。手动方式始终可用（见下方「如何获取 Token」）。',
+      autoFetchPendingTitle: '已登录，但数据还没落盘',
+      autoFetchPending: '关闭 chat.deepseek.com 那个标签页（Ctrl+W）后再试。',
+      autoFetchNoLoginTitle: '没有找到 DeepSeek 登录态',
+      autoFetchNoLogin: '请先在浏览器登录 chat.deepseek.com。',
       autoFetchStaleTitle: '读到的是过期登录记录',
-      autoFetchStale: '浏览器里保存的 Token 是较早以前的，上游已判定失效。请在 chat.deepseek.com 重新登录一次，**关闭该标签页**让数据落盘，再点「从浏览器获取」。',
+      autoFetchStale: '请重新登录 chat.deepseek.com，关闭该标签页后再试。',
     };
 
     /**
@@ -110,19 +110,37 @@ window.__ModuleLoader__.load({
 .dwo-notice-error{color:var(--dsw-alias-state-error-primary,#c22)}
 
 .dwo-list{list-style:none;margin:0;padding:0;display:grid;gap:6px}
-.dwo-row{display:flex;align-items:center;gap:10px;min-height:44px;padding:0 12px;box-sizing:border-box;
+.dwo-row{display:flex;align-items:center;gap:8px;min-height:44px;padding:0 10px 0 12px;box-sizing:border-box;
   border:1px solid var(--dsw-alias-border-l4,rgba(127,127,127,.25));
   border-radius:var(--dsw-radius-md,8px);background:var(--dsw-alias-bg-layer-1,transparent)}
 .dwo-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
   color:var(--dsw-alias-label-secondary,#6b6b6b)}
-.dwo-badge{flex:none;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;
-  border-radius:999px;font-size:11px;line-height:20px;white-space:nowrap}
-.dwo-badge-ok{background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16a34a) 12%,transparent);
-  color:var(--dsw-alias-state-success-primary,#16a34a)}
-.dwo-badge-off{background:color-mix(in srgb,var(--dsw-alias-state-error-primary,#c22) 12%,transparent);
-  color:var(--dsw-alias-state-error-primary,#c22)}
 .dwo-err{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
+
+/* 图标按钮：状态与操作用图标表达，靠 title 提供无障碍名称 */
+.dwo-icon{flex:none;display:inline-flex;align-items:center;justify-content:center;
+  width:28px;height:28px;padding:0;border:none;border-radius:var(--dsw-radius-sm,6px);
+  background:transparent;cursor:pointer;color:var(--dsw-alias-label-tertiary,#8a8a8a);
+  transition:background .12s ease,color .12s ease}
+.dwo-icon:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1));
+  color:var(--dsw-alias-label-primary,#1f1e1d)}
+.dwo-icon:focus-visible{outline:2px solid var(--dsw-alias-label-primary,#1f1e1d);outline-offset:-1px}
+.dwo-icon:disabled{opacity:.45;cursor:default}
+.dwo-icon svg{width:16px;height:16px;display:block;fill:none;stroke:currentColor;
+  stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.dwo-icon-ok{color:var(--dsw-alias-state-success-primary,#16a34a)}
+.dwo-icon-bad{color:var(--dsw-alias-state-error-primary,#c22)}
+.dwo-icon-danger:hover:not(:disabled){color:var(--dsw-alias-state-error-primary,#c22)}
+.dwo-icon-busy{animation:dwo-spin .8s linear infinite}
+@keyframes dwo-spin{to{transform:rotate(360deg)}}
+/* 状态图标：无边框，纯指示 */
+.dwo-state{flex:none;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px}
+.dwo-state svg{width:15px;height:15px;display:block;fill:none;stroke:currentColor;
+  stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.dwo-state-ok{color:var(--dsw-alias-state-success-primary,#16a34a)}
+.dwo-state-bad{color:var(--dsw-alias-state-error-primary,#c22)}
+.dwo-state-wait{color:var(--dsw-alias-label-tertiary,#8a8a8a)}
 
 .dwo-add{display:flex;gap:8px}
 .dwo-input{flex:1;min-width:0;height:36px;padding:0 12px;box-sizing:border-box;font:inherit;font-size:13px;
@@ -232,10 +250,7 @@ window.__ModuleLoader__.load({
   transition:transform .18s cubic-bezier(.2,.8,.3,1)}
 .dwo-toggle-on .dwo-switch-knob{transform:translateX(16px)}
 
-.dwo-test{list-style:none;margin:0;padding:0;display:grid;gap:4px;font-size:12px;
-  color:var(--dsw-alias-label-secondary,#6b6b6b)}
-.dwo-test-ok{color:var(--dsw-alias-state-success-primary,#16a34a)}
-.dwo-test-bad{color:var(--dsw-alias-state-error-primary,#c22)}
+.dwo-notice-ok{color:var(--dsw-alias-state-success-primary,#16a34a)}
 `;
 
     /** 注入样式表（每份文档只注入一次）。 */
@@ -268,6 +283,65 @@ window.__ModuleLoader__.load({
       return h('div', { className: `dwo-stat${warn ? ' dwo-stat-warn' : ''}` },
         h('span', { className: 'dwo-stat-label' }, label),
         h('span', { className: 'dwo-stat-value' }, String(value)));
+    }
+
+    /**
+     * 内联图标集。
+     *
+     * 用 SVG 而不是字符/emoji：字形在部分系统字体里会缺字变成方框，
+     * emoji 的配色也无法跟随主题。这里统一 currentColor + stroke，
+     * 深浅色主题自动适配。
+     */
+    const ICONS = {
+      // 圆内对勾：可用
+      check: 'M20 6L9 17l-5-5',
+      // 圆内叉：失效/已禁用
+      cross: 'M15 9l-6 6M9 9l6 6',
+      // 横线：未测试/未知
+      minus: 'M8 12h8',
+      // 从浏览器抓取
+      browser: 'M4 5h16v14H4zM4 9h16M7 7h.01M10 7h.01',
+      // 测速（秒表）
+      gauge: 'M12 14l4-4M12 20a8 8 0 100-16 8 8 0 00016zM4 12h2M18 12h2',
+      // 刷新
+      refresh: 'M20 11a8 8 0 10-2.3M4 13a8 8 0 1010 2.3M20 5v6h-6M4 19v-6h6',
+      // 删除（垃圾桶）
+      trash: 'M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6',
+    };
+
+    /** 单个图标。 */
+    function Icon({ name, className = '' }) {
+      const path = ICONS[name];
+      if (!path) return null;
+      return h('svg', { viewBox: '0 0 24 24', 'aria-hidden': 'true', className },
+        h('path', { d: path }));
+    }
+
+    /** 图标按钮（带 title 作为无障碍名称）。 */
+    function IconButton({ icon, title, onClick, disabled, className = '', busy }) {
+      return h('button', {
+        type: 'button',
+        className: `dwo-icon ${className}${busy ? ' dwo-icon-busy' : ''}`,
+        onClick,
+        disabled: disabled || busy,
+        title,
+        'aria-label': title,
+      }, h(Icon, { name: icon }));
+    }
+
+    /** 纯状态指示（不可点）。 */
+    function StateIcon({ state, title }) {
+      const map = {
+        ok: { icon: 'check', cls: 'dwo-state-ok' },
+        bad: { icon: 'cross', cls: 'dwo-state-bad' },
+        wait: { icon: 'minus', cls: 'dwo-state-wait' },
+      };
+      const item = map[state] || map.wait;
+      return h('span', {
+        className: `dwo-state ${item.cls}`,
+        title,
+        'aria-label': title,
+      }, h(Icon, { name: item.icon }));
     }
 
     /** 「如何获取 Token」折叠区。 */
@@ -382,6 +456,7 @@ window.__ModuleLoader__.load({
       const [error, setError] = useState(null);
       const [busy, setBusy] = useState(false);
       const [testResult, setTestResult] = useState(null);
+      const [testingId, setTestingId] = useState(null);
       const [token, setToken] = useState('');
       const [mode, setMode] = useState('agent');
       const [affinity, setAffinity] = useState(true);
@@ -485,13 +560,18 @@ window.__ModuleLoader__.load({
           if (value?.added) {
             setAutoResult({ kind: 'ok', text: text.autoFetchOk(value.browser) });
             setState({ ...(state || {}), credentials: value.credentials });
+          } else if (value?.alreadyPresent) {
+            // 读到的 token 已在池里：不是错误，但也确实没新增。
+            // 必须如实说，否则用户会以为添加成功却在列表里找不到。
+            setAutoResult({ kind: 'ok', text: text.autoFetchPresent });
+            setState({ ...(state || {}), credentials: value.credentials });
           } else {
             // 按后端给出的原因分流。三种原因对应三种完全不同的处置：
-            //   stale-token → 读到了但已失效，重新登录
+            //   stale → 读到了但已失效，重新登录
             //   not-flushed → 已登录但没落盘，关标签页
             //   not-found   → 确实没登录，去登录
             // 混在一起说会让用户反复做无用功。
-            const reason = value?.reason === 'stale-token'
+            const reason = value?.reason === 'stale'
               ? 'stale'
               : value?.reason === 'not-flushed' ? 'pending' : 'not-found';
 
@@ -511,16 +591,26 @@ window.__ModuleLoader__.load({
         }
       };
 
-      const runTest = async () => {
-        setBusy(true);
+      /**
+       * 测试单条凭据。
+       *
+       * 逐条测而不是"测试全部"：后者要逐条打上游，几十条凭据时设置页会
+       * 卡住几十秒，用户不知道在等什么。点哪条测哪条，反馈立即可见。
+       */
+      const testOne = async (item) => {
+        setTestingId(item.id);
         setTestResult(null);
         try {
-          setTestResult(await request(TEST_PATH, { method: 'POST' }));
+          const result = await request(TEST_PATH, {
+            method: 'POST',
+            body: JSON.stringify({ id: item.id }),
+          });
+          setTestResult(result);
           await load();
         } catch (err) {
           setError(String(err.message || err));
         } finally {
-          setBusy(false);
+          setTestingId(null);
         }
       };
 
@@ -528,34 +618,41 @@ window.__ModuleLoader__.load({
         || { items: [], summary: { total: 0, available: 0, disabled: 0 } };
       const kernel = state?.kernel;
 
-      const rows = credentials.items.map(item => h('li', { key: item.id, className: 'dwo-row' }, [
-        h('span', { key: 'l', className: 'dwo-label', title: item.label }, item.label),
-        item.errorCount > 0
-          ? h('span', { key: 'e', className: 'dwo-err' }, `错误 ${item.errorCount}`)
-          : null,
-        h('span', {
-          key: 'b',
-          className: `dwo-badge ${item.disabled ? 'dwo-badge-off' : 'dwo-badge-ok'}`,
-          title: item.disabled ? (item.disabledReason || '') : '',
-        }, item.disabled ? text.disabled : text.available),
-        h('button', {
-          key: 'rm',
-          type: 'button',
-          className: 'dwo-btn dwo-btn-link',
-          onClick: () => remove(item),
-          disabled: busy,
-        }, text.remove),
-      ]));
+      const rows = credentials.items.map(item => {
+        // 状态图标：已禁用 → 红叉；测试通过 → 对勾；未测/出错 → 横线
+        const tested = testResult && testResult.label === item.label;
+        const state = item.disabled ? 'bad'
+          : tested ? (testResult.valid ? 'ok' : 'bad')
+            : 'wait';
+        const stateTitle = item.disabled
+          ? (item.disabledReason || text.disabled)
+          : tested ? (testResult.valid ? text.valid : (testResult.error || text.invalid))
+            : text.notTested;
 
-      const testList = testResult
-        ? h('ul', { className: 'dwo-test' }, testResult.results.map((item, index) => {
-          const detail = item.error ? `（${item.error}）` : '';
-          return h('li', {
-            key: `${item.label}-${index}`,
-            className: item.valid ? 'dwo-test-ok' : 'dwo-test-bad',
-          }, `${item.label} — ${item.valid ? text.valid : text.invalid}${detail}`);
-        }))
-        : null;
+        return h('li', { key: item.id, className: 'dwo-row' }, [
+          h('span', { key: 'l', className: 'dwo-label', title: item.label }, item.label),
+          item.errorCount > 0
+            ? h('span', { key: 'e', className: 'dwo-err' }, `错误 ${item.errorCount}`)
+            : null,
+          h(StateIcon, { key: 's', state, title: stateTitle }),
+          h(IconButton, {
+            key: 't',
+            icon: 'gauge',
+            title: text.testOne,
+            onClick: () => testOne(item),
+            busy: testingId === item.id,
+            disabled: busy,
+          }),
+          h(IconButton, {
+            key: 'rm',
+            icon: 'trash',
+            className: 'dwo-icon-danger',
+            title: text.remove,
+            onClick: () => remove(item),
+            disabled: busy,
+          }),
+        ]);
+      });
 
       const notices = [
         kernel && !kernel.ready
@@ -630,16 +727,14 @@ window.__ModuleLoader__.load({
             onClick: submit,
             disabled: busy || !token.trim(),
           }, text.add),
-        ]),
-
-        h('div', { key: 'auto', className: 'dwo-actions' }, [
-          h('button', {
+          h(IconButton, {
             key: 'auto',
-            type: 'button',
-            className: 'dwo-btn',
+            icon: 'browser',
+            title: autoBusy ? text.autoFetching : text.autoFetch,
             onClick: autoFetch,
-            disabled: autoBusy || busy,
-          }, autoBusy ? text.autoFetching : text.autoFetch),
+            busy: autoBusy,
+            disabled: busy,
+          }),
         ]),
 
         autoResult
@@ -662,23 +757,21 @@ window.__ModuleLoader__.load({
         h(Help, { key: 'help' }),
 
         h('div', { key: 'actions', className: 'dwo-actions' }, [
-          h('button', {
-            key: 'test',
-            type: 'button',
-            className: 'dwo-btn',
-            onClick: runTest,
-            disabled: busy || credentials.items.length === 0,
-          }, busy ? text.testing : text.testAll),
-          h('button', {
+          h(IconButton, {
             key: 'reload',
-            type: 'button',
-            className: 'dwo-btn',
+            icon: 'refresh',
+            title: text.reload,
             onClick: load,
             disabled: busy,
-          }, text.reload),
+          }),
         ]),
 
-        testList,
+        testResult
+          ? h('p', {
+            key: 'tr',
+            className: `dwo-notice${testResult.valid ? ' dwo-notice-ok' : ' dwo-notice-warn'}`,
+          }, `${testResult.label} — ${testResult.valid ? text.valid : text.invalid}${testResult.error ? `（${testResult.error}）` : ''}`)
+          : null,
       ]);
     }
 
