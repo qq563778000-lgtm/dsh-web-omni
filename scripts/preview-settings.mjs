@@ -93,7 +93,7 @@ const BODY = `
   <div class="dwo-add">
     <input class="dwo-input" placeholder="粘贴 DeepSeek Web Token" />
     <button class="dwo-icon dwo-icon-primary" title="添加"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
-    <button class="dwo-icon" title="从浏览器获取 Token"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 9h16M7 7h.01M10 7h.01M12 11v5M9.5 13.5L12 16l2.5-2.5"/></svg></button>
+    <button class="dwo-icon" title="从浏览器获取 Token"><svg viewBox="0 0 24 24"><path d="M6.5 18a4.5 4.5 0 0 1-3-4.5 4.5 4.5 0 0 1 2.2 3.9A5.5 5.5 0 0 1-.6 4.8M12 12v8M8.5 16.5L12 20l3.5-3.5"/></svg></button>
   </div>
 
   <details class="dwo-help" open>
