@@ -312,8 +312,37 @@ export function isLargeFileWriteTruncation(truncatedContent, tools = []) {
   return quotes % 2 === 1;
 }
 
-export function getToolContinuationPrompt(truncatedContent, errorDetails, tools = []) {
-  const tail = String(truncatedContent || '').slice(-1500);
+/**
+ * 生成"输出被截断"的重试提示词。
+ *
+ * @param {string} truncatedContent 上游上一次的完整输出
+ * @param {string} errorDetails     解析器给出的失败原因
+ * @param {object[]} [tools]        可用工具
+ * @param {{ attempt?: number }} [options]
+ *   attempt 是**本次重试是第几次**（从 1 开始）。
+ *   它决定要不要"升级"要求——见下方 retryEscalation。
+ */
+/**
+ * 剥掉上游在输出被长度上限截断时追加的 `INCOMPLETE` 标记。
+ *
+ * 真实故障（2026-11-03 DSH）：模型把整份 data.js 塞进 write 参数，输出到
+ * 18,811 字符撞上上限，上游在末尾追加 `INCOMPLETE` 并断开。原文末尾因此是
+ *   return list.sort((a, b) => (a.dateINCOMPLETE
+ *
+ * 这个标记**不是模型写的代码**。若原样回放给重试提示词，模型会看到自己
+ * "写过"这个词，续写/重写时可能把它当成代码的一部分保留下来；用于判断
+ * 截断位置的 `tail` 也会指向一个不存在的语法错误。
+ *
+ * 只在它确实位于末尾（可能带空白/引号/括号）时剥离，避免误伤正文里
+ * 正常出现的单词。
+ */
+export function stripUpstreamTruncationMarker(text) {
+  return String(text || '').replace(/\s*INCOMPLETE\s*$/, '');
+}
+
+export function getToolContinuationPrompt(truncatedContent, errorDetails, tools = [], options = {}) {
+  const tail = stripUpstreamTruncationMarker(String(truncatedContent || '')).slice(-1500);
+  const attempt = Math.max(0, Number(options?.attempt) || 0);
 
   // 大文件写入场景走完全不同的策略：不是"精确续写"，而是"分段写"。
   //
@@ -351,6 +380,25 @@ export function getToolContinuationPrompt(truncatedContent, errorDetails, tools 
     const signalLine = signal
       ? `1. 触发信号独占一行，精确为：${signal}`
       : '1. 触发信号独占一行';
+
+    // 重试升级：第 2 次及以后把"建议"变成"硬约束"。
+    //
+    // 为什么需要：首轮提示词只说"控制在 4000 字符以内"，是软约束。
+    // 真实故障（2026-11-03 DSH）：模型把 18,811 字符的 data.js 整个塞进
+    // write 参数，撞上输出上限被截断并追加 INCOMPLETE。首次重试它很可能
+    // 又"想一次写完"——同一份提示词、同样的意图，结果自然一样。
+    //
+    // 升级后改成两件事：
+    //   1. 明确告知"你已经因为写太多失败过一次"，打破"再试一次就能写完"的幻觉；
+    //   2. 把上限从 4000 压到 1500 字符，并明确"只写第一段，不要写其余部分"。
+    //      不给精确的边界，模型只会把 4000 当成"至少可以写到 4000"。
+    const escalated = attempt >= 2;
+    const budgetChars = escalated ? 1500 : 4000;
+    const escalationBlock = escalated
+      ? `\n**这已经是第 ${attempt} 次重试。上一次你仍然试图一次写完整份文件，所以又失败了。**\n`
+        + '这一次必须放弃"一次写完"：只写文件最开头的**一小段**，剩下的留给后续调用。\n'
+        + `即使文件还有大量内容没写，本次输出也**必须**在 ${budgetChars} 字符内结束——这是硬性上限，不是建议。\n`
+      : '';
     return `你上一次的工具调用因为**参数内容太长**被截断了——不是格式问题，是把整份文件内容塞进一次调用装不下。
 
 被截断的位置（尾部）：
@@ -365,13 +413,14 @@ ${tail}
 第 1 步：只写文件的开头部分（例如前 200 行），内容必须在这一步就完整闭合、可正常打开。
 第 2 步起：在该文件里定位一个**唯一且已存在的锚点**（如上一段结尾的标签），把新一段内容替换进去，保持文件始终完整。
 重复第 2 步，直到整个文件写完。
+${escalationBlock}
 
 写文件可用的工具（从下列中选择**本地工作区**的那个，不要选 gitlab 等远程仓库类工具）：
 - 创建文件：${writeList}
 - 追改文件：${editList}
 
 关键要求：
-- **每一次调用的参数必须控制在 4000 字符以内**。上限就是上一次失败的原因，宁可分 10 次也不要写满一次
+- **每一次调用的参数必须控制在 ${budgetChars} 字符以内**。上限就是上一次失败的原因，宁可分 10 次也不要写满一次
 - 每一步写进去的片段都必须是**完整可用的代码**，不要留下半截标签
 - 不要重复已经写进文件的段落
 
@@ -390,7 +439,7 @@ ${signal}
   </function_call>
 </function_calls>
 
-现在只输出第 1 步的工具调用，内容控制在 4000 字符以内，不要解释。`;
+现在只输出第 1 步的工具调用，内容控制在 ${budgetChars} 字符以内，不要解释。`;
   }
 
   return `你上一次的输出在工具调用 XML 完成前被截断了。
@@ -444,20 +493,35 @@ export async function attemptToolParseWithRetry({
     return { toolCalls: null, content: null, failureType: 'disabled', attempts: 1, originalContent: content };
   }
 
+  // maxAttempts 的语义是「**重新请求上游**的次数」，不是「解析轮数」。
+  //
+  // 旧实现把它当成解析轮数：循环 `attempt < maxAttempts`，但中途用
+  // `attempt >= maxAttempts - 1` 提前放弃，于是 maxAttempts=2 时
+  //   attempt=0 判定失败 → 重试 1 次
+  //   attempt=1 判定失败 → 1 >= 1 立刻返回
+  // 实际只重新请求了 1 次，回报却是 attempts=2（2026-11-03 实测复现：
+  // 假上游计数 calls=1，返回 attempts=2）。用户看到"已重试 2 次"，
+  // 而我们只给了模型一次机会——这正是"两次重试全废"的另一半原因。
+  //
+  // 现在拆成两个量：
+  //   retries    已**实际发起**的上游重试次数（对外回报这个值）
+  //   MAX_ROUNDS 解析轮数 = 1 次首判 + retries 次重试
   const safeMaxAttempts = Math.max(1, Number.parseInt(maxAttempts, 10) || RETRY_LOOP_GUARD);
   let currentContent = String(content || '');
   let lastResult = null;
+  // 已实际发起的上游重试次数。只有真正调用 retryToolRequest 才 +1。
+  let retries = 0;
   // 重试模式的粘滞状态：一旦因"只写计划句"进入 missing_tool_call，
   // 后续轮次沿用同一模式，避免失败类型在两次判定间漂移。
   let retryMode = null;
 
-  for (let attempt = 0; attempt < safeMaxAttempts; attempt++) {
+  for (let round = 0; round <= safeMaxAttempts; round++) {
     lastResult = promptPlan.parseToolCallsDetailed
       ? promptPlan.parseToolCallsDetailed(currentContent)
       : (promptPlan.parseToolCalls(currentContent) || { toolCalls: null });
 
     if (lastResult?.toolCalls?.length) {
-      return { ...lastResult, attempts: attempt + 1, originalContent: content, finalContent: currentContent };
+      return { ...lastResult, attempts: retries, originalContent: content, finalContent: currentContent };
     }
 
     let failureType = classifyToolFailure(currentContent, promptPlan.triggerSignal, lastResult);
@@ -482,16 +546,16 @@ export async function attemptToolParseWithRetry({
       failureType = 'missing_tool_call';
       retryMode = 'missing_tool_call';
     } else if (failureType === 'no_fc') {
-      return { toolCalls: null, content: lastResult?.content ?? (currentContent || null), failureType, attempts: attempt + 1, originalContent: content, finalContent: currentContent };
+      return { toolCalls: null, content: lastResult?.content ?? (currentContent || null), failureType, attempts: retries, originalContent: content, finalContent: currentContent };
     }
 
-    if (!retryEnabled || !retryToolRequest || attempt >= safeMaxAttempts - 1) {
+    if (!retryEnabled || !retryToolRequest || retries >= safeMaxAttempts) {
       return {
         toolCalls: null,
         content: lastResult?.content ?? null,
         failureType,
         errorDetails: diagnoseToolParseError(currentContent, promptPlan.triggerSignal, lastResult),
-        attempts: attempt + 1,
+        attempts: retries,
         originalContent: content,
         finalContent: currentContent,
       };
@@ -503,7 +567,11 @@ export async function attemptToolParseWithRetry({
     // 根本没有格式的回复，模型只会再输出一次计划（实测两次重试均失败）。
     let retryPrompt;
     if (failureType === 'truncated') {
-      retryPrompt = getToolContinuationPrompt(currentContent, errorDetails, promptPlan.tools);
+      // 传入即将发起的这一次的重试序号（retries 尚未自增，+1 即本次）。
+      // 提示词据此决定是否升级为硬性字符上限。
+      retryPrompt = getToolContinuationPrompt(currentContent, errorDetails, promptPlan.tools, {
+        attempt: retries + 1,
+      });
     } else if (failureType === 'missing_tool_call') {
       retryPrompt = getMissingToolCallRetryPrompt(currentContent, promptPlan.triggerSignal, promptPlan.tools);
     } else {
@@ -516,6 +584,9 @@ export async function attemptToolParseWithRetry({
     const largeFileMode = failureType === 'truncated'
       && isLargeFileWriteTruncation(currentContent, promptPlan.tools);
 
+    // 只有真正发起上游请求才计数。放在 await 之前：即便请求抛错，
+    // 这一次也确实消耗了用户的等待与上游配额，必须计入。
+    retries += 1;
     const retryContent = await retryToolRequest({
       retryPrompt,
       currentContent,
@@ -523,7 +594,7 @@ export async function attemptToolParseWithRetry({
       signal,
       failureType,
       errorDetails,
-      attempt: attempt + 1,
+      attempt: retries,
     });
 
     if (largeFileMode) {
@@ -541,7 +612,7 @@ export async function attemptToolParseWithRetry({
     content: lastResult?.content ?? null,
     failureType: lastResult?.failureType || 'syntax_error',
     errorDetails: diagnoseToolParseError(currentContent, promptPlan.triggerSignal, lastResult),
-    attempts: safeMaxAttempts,
+    attempts: retries,
     originalContent: content,
     finalContent: currentContent,
   };
